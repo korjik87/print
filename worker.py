@@ -1,27 +1,42 @@
-import pika, subprocess, json, requests, sys
+import pika, subprocess, json, requests, sys, os, base64, tempfile, uuid
 import config
 
-# Каждый воркер хранит свой принтер ID
-MY_PRINTER_ID = config.MY_PRINTER_ID  # например, 1
+MY_PRINTER_ID = config.PRINTER_ID  # id своего принтера
+
 
 def print_file(task):
-    file_path = task.get("file_path")
-    printer = config.DEFAULT_PRINTER
-    printer_id = task.get("printer_id", config.DEFAULT_PRINTER)
-    method = task.get("method", config.DEFAULT_METHOD)
+    printer = str(task.get("printer"))
+    method = task.get("method", "raw")
+
+    content_b64 = task.get("content")
+    filename = task.get("filename", f"print_job_{uuid.uuid4().hex}.pdf")
+
+    if not content_b64:
+        return {
+            "file": None,
+            "printer": printer,
+            "method": method,
+            "status": "error",
+            "error": "Нет содержимого файла (content)"
+        }
+
+    # создаём временный файл
+    tmp_path = os.path.join(tempfile.gettempdir(), filename)
 
     try:
+        with open(tmp_path, "wb") as f:
+            f.write(base64.b64decode(content_b64))
+
+        # выполняем печать
         if method == "raw":
             # nc -w1 192.168.50.131 9100 < file.pdf
-            cmd = f"nc -w1 {printer} < {file_path}"
+            cmd = f"nc -w1 {config.PRINTERS[printer]} < {tmp_path}"
             subprocess.run(cmd, shell=True, check=True)
 
         elif method == "cups":
-            # lp -d OfficePrinter file.pdf
-            subprocess.run(["lp", "-d", printer, file_path], check=True)
-
+            subprocess.run(["lp", "-d", config.PRINTERS[printer], tmp_path], check=True)
         else:
-            raise Exception(f"Unknown print method: {method}")
+            raise Exception(f"Неизвестный метод печати: {method}")
 
         status = "success"
         error = None
@@ -32,11 +47,14 @@ def print_file(task):
     except Exception as e:
         status = "error"
         error = str(e)
+    finally:
+        # удаляем временный файл
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
 
     return {
-        "file": file_path,
+        "file": filename,
         "printer": printer,
-        "printer_id": printer_id,
         "method": method,
         "status": status,
         "error": error
@@ -44,8 +62,6 @@ def print_file(task):
 
 
 def callback(ch, method, properties, body):
-    print(f" Worker ")
-
     try:
         task = json.loads(body.decode())
     except Exception as e:
@@ -62,11 +78,14 @@ def callback(ch, method, properties, body):
 
     result = print_file(task)
 
-    # Отправляем обратно в Laravel API
+    # Отправляем результат обратно в Laravel API
     try:
         requests.post(config.LARAVEL_API, json=result, timeout=5)
     except Exception as e:
         print("Ошибка при возврате результата:", e, file=sys.stderr)
+
+    # подтверждаем обработку ???????
+    ch.basic_ack(delivery_tag=method.delivery_tag)
 
     print("Результат:", result)
 
@@ -76,7 +95,7 @@ def main():
         pika.ConnectionParameters(host=config.RABBIT_HOST, port=config.RABBIT_PORT)
     )
     channel = connection.channel()
-    channel.queue_declare(queue=config.RABBIT_QUEUE)
+    channel.queue_declare(queue=config.RABBIT_QUEUE, durable=False)
 
     channel.basic_consume(
         queue=config.RABBIT_QUEUE,
@@ -84,7 +103,7 @@ def main():
         auto_ack=False
     )
 
-    print(f" [*] Worker для принтера {MY_PRINTER_ID} запущен. Жду задачи...")
+    print(f" [*] Worker {MY_PRINTER_ID} запущен. Жду задачи...")
     channel.start_consuming()
 
 
