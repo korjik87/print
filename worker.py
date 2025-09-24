@@ -2,6 +2,7 @@ import pika
 import subprocess
 import json
 import requests
+import signal
 import sys
 import os
 import base64
@@ -13,6 +14,11 @@ MY_PRINTER_ID = str(config.PRINTER_ID)  # id своего принтера
 QUEUE_NAME = f"print_tasks_printer_{MY_PRINTER_ID}"
 
 
+connection = None
+channel = None
+queue_name = None
+
+
 def send_callback(result: dict):
     """Отправка результата в Laravel API"""
     try:
@@ -22,11 +28,10 @@ def send_callback(result: dict):
         print("Ошибка при возврате результата:", e, file=sys.stderr)
 
 
-def print_file(task: dict) -> dict:
-    """Печать файла и возврат результата"""
+def print_file(task):
     printer = str(task.get("printer"))
     method = task.get("method", "raw")
-    job_id = task.get("job_id")
+    job_id = task.get("job_id", str(uuid.uuid4()))
 
     content_b64 = task.get("content")
     filename = task.get("filename", f"print_job_{uuid.uuid4().hex}.pdf")
@@ -41,6 +46,7 @@ def print_file(task: dict) -> dict:
             "error": "Нет содержимого файла (content)"
         }
 
+    # создаём временный файл
     tmp_path = os.path.join(tempfile.gettempdir(), filename)
 
     try:
@@ -48,22 +54,41 @@ def print_file(task: dict) -> dict:
             f.write(base64.b64decode(content_b64))
 
         if method == "raw":
-            # пример: nc -w1 192.168.50.131 9100 < file.pdf
-            cmd = f"nc -w1 {config.PRINTERS[printer]} < {tmp_path}"
-            subprocess.run(cmd, shell=True, check=True)
+            # отправляем содержимое напрямую в принтер через nc
+            cmd = ["nc", "-w1", config.PRINTER, "9100"]
+            with open(tmp_path, "rb") as f:
+                result = subprocess.run(
+                    cmd,
+                    input=f.read(),
+                    capture_output=True
+                )
+
+            if result.returncode != 0:
+                stderr = result.stderr.decode(errors="ignore").strip()
+                cli =  f"nc -w1 {config.PRINTER} < {tmp_path}"
+
+                raise Exception(
+                    f"Ошибка печати (RAW): код {result.returncode}, stderr: {stderr}, cmd: {cli}"
+                )
 
         elif method == "cups":
-            subprocess.run(["lp", "-d", config.PRINTERS[printer], tmp_path], check=True)
+            cmd = ["lp", "-d", config.PRINTER, tmp_path]
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True
+            )
+
+            if result.returncode != 0:
+                raise Exception(
+                    f"Ошибка печати (CUPS): код {result.returncode}, stderr: {result.stderr.strip()}"
+                )
 
         else:
             raise Exception(f"Неизвестный метод печати: {method}")
 
         status = "success"
         error = None
-
-    except subprocess.CalledProcessError as e:
-        status = "error"
-        error = f"Ошибка печати: {str(e)}"
 
     except Exception as e:
         status = "error"
@@ -98,7 +123,30 @@ def callback(ch, method, properties, body):
     print("Результат:", result)
 
 
+def graceful_exit(signum, frame):
+    global connection, channel
+    print("\n [*] Останавливаю worker...")
+
+    try:
+        if channel and channel.is_open:
+            channel.close()
+            print(" [*] Канал закрыт")
+        if connection and connection.is_open:
+            connection.close()
+            print(" [*] Соединение закрыто")
+    except Exception as e:
+        print(" [!] Ошибка при закрытии:", e)
+
+    sys.exit(0)
+
+
+signal.signal(signal.SIGINT, graceful_exit)
+signal.signal(signal.SIGTERM, graceful_exit)
+
+
 def main():
+    global connection, channel, queue_name
+
     connection = pika.BlockingConnection(
         pika.ConnectionParameters(host=config.RABBIT_HOST, port=config.RABBIT_PORT)
     )

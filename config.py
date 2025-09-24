@@ -12,8 +12,4 @@ LARAVEL_API = os.getenv("LARAVEL_API", "http://localhost")
 DEFAULT_PRINTER = os.getenv("DEFAULT_PRINTER", "OfficePrinter")
 DEFAULT_METHOD = os.getenv("DEFAULT_METHOD", "raw")
 PRINTER_ID = os.getenv("PRINTER_ID", "raw")
-PRINTERS = {
-    10191: '192.168.50.131 9100',
-    2: '192.168.50.132:9100',
-    3: 'OfficePrinter',  # для CUPS
-}
+PRINTER = os.getenv("DEFAULT_PRINTER", '192.168.50.131')
