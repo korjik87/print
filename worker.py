@@ -1,12 +1,32 @@
-import pika, subprocess, json, requests, sys, os, base64, tempfile, uuid
+import pika
+import subprocess
+import json
+import requests
+import sys
+import os
+import base64
+import tempfile
+import uuid
 import config
 
-MY_PRINTER_ID = config.PRINTER_ID  # id своего принтера
+MY_PRINTER_ID = str(config.PRINTER_ID)  # id своего принтера
+QUEUE_NAME = f"print_tasks_printer_{MY_PRINTER_ID}"
 
 
-def print_file(task):
+def send_callback(result: dict):
+    """Отправка результата в Laravel API"""
+    try:
+        url = f"{config.LARAVEL_API}/api/v1/print-callback"
+        requests.post(url, json=result, timeout=5)
+    except Exception as e:
+        print("Ошибка при возврате результата:", e, file=sys.stderr)
+
+
+def print_file(task: dict) -> dict:
+    """Печать файла и возврат результата"""
     printer = str(task.get("printer"))
     method = task.get("method", "raw")
+    job_id = task.get("job_id")
 
     content_b64 = task.get("content")
     filename = task.get("filename", f"print_job_{uuid.uuid4().hex}.pdf")
@@ -15,26 +35,26 @@ def print_file(task):
         return {
             "file": None,
             "printer": printer,
+            "job_id": job_id,
             "method": method,
             "status": "error",
             "error": "Нет содержимого файла (content)"
         }
 
-    # создаём временный файл
     tmp_path = os.path.join(tempfile.gettempdir(), filename)
 
     try:
         with open(tmp_path, "wb") as f:
             f.write(base64.b64decode(content_b64))
 
-        # выполняем печать
         if method == "raw":
-            # nc -w1 192.168.50.131 9100 < file.pdf
+            # пример: nc -w1 192.168.50.131 9100 < file.pdf
             cmd = f"nc -w1 {config.PRINTERS[printer]} < {tmp_path}"
             subprocess.run(cmd, shell=True, check=True)
 
         elif method == "cups":
             subprocess.run(["lp", "-d", config.PRINTERS[printer], tmp_path], check=True)
+
         else:
             raise Exception(f"Неизвестный метод печати: {method}")
 
@@ -43,18 +63,20 @@ def print_file(task):
 
     except subprocess.CalledProcessError as e:
         status = "error"
-        error = str(e)
+        error = f"Ошибка печати: {str(e)}"
+
     except Exception as e:
         status = "error"
         error = str(e)
+
     finally:
-        # удаляем временный файл
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
 
     return {
         "file": filename,
         "printer": printer,
+        "job_id": job_id,
         "method": method,
         "status": status,
         "error": error
@@ -65,28 +87,14 @@ def callback(ch, method, properties, body):
     try:
         task = json.loads(body.decode())
     except Exception as e:
-        print("Ошибка: неверный формат задачи", e)
+        print("Ошибка: неверный формат задачи", e, file=sys.stderr)
         ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
         return
 
-    # фильтруем задачи по своему принтеру
-    if str(task.get("printer")) != str(MY_PRINTER_ID):
-        # не подтверждаем, возвращаем в очередь
-        print(f" [*] Worker {MY_PRINTER_ID}: задача для {task.get('printer')}, пропускаю")
-        ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
-        return
-
     result = print_file(task)
+    send_callback(result)
 
-    # Отправляем результат обратно в Laravel API
-    try:
-        requests.post(config.LARAVEL_API, json=result, timeout=5)
-    except Exception as e:
-        print("Ошибка при возврате результата:", e, file=sys.stderr)
-
-    # подтверждаем обработку ???????
     ch.basic_ack(delivery_tag=method.delivery_tag)
-
     print("Результат:", result)
 
 
@@ -95,15 +103,18 @@ def main():
         pika.ConnectionParameters(host=config.RABBIT_HOST, port=config.RABBIT_PORT)
     )
     channel = connection.channel()
-    channel.queue_declare(queue=config.RABBIT_QUEUE, durable=False)
 
-    channel.basic_consume(
-        queue=config.RABBIT_QUEUE,
-        on_message_callback=callback,
-        auto_ack=False
+    channel.queue_declare(
+        queue=QUEUE_NAME,
+        durable=True,       # очередь сохраняется при рестарте
+        exclusive=False,
+        auto_delete=False
     )
 
-    print(f" [*] Worker {MY_PRINTER_ID} запущен. Жду задачи...")
+    channel.basic_qos(prefetch_count=1)  # по 1 задаче на воркер
+    channel.basic_consume(queue=QUEUE_NAME, on_message_callback=callback)
+
+    print(f" [*] Worker {MY_PRINTER_ID} запущен. Очередь: {QUEUE_NAME}")
     channel.start_consuming()
 
 
