@@ -13,3 +13,4 @@ DEFAULT_PRINTER = os.getenv("DEFAULT_PRINTER", "OfficePrinter")
 DEFAULT_METHOD = os.getenv("DEFAULT_METHOD", "raw")
 PRINTER_ID = os.getenv("PRINTER_ID", "raw")
 PRINTER = os.getenv("DEFAULT_PRINTER", '192.168.50.131')
+DISABLE_PRINT = os.getenv("DISABLE_PRINT", "false").lower() == "true"
