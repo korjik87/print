@@ -133,8 +133,17 @@ signal.signal(signal.SIGTERM, graceful_exit)
 def main():
     global connection, channel
 
+    credentials = pika.PlainCredentials(
+        username=config.RABBIT_USER,
+        password=config.RABBIT_PASS
+    )
+
     connection = pika.BlockingConnection(
-        pika.ConnectionParameters(host=config.RABBIT_HOST, port=config.RABBIT_PORT)
+        pika.ConnectionParameters(
+            host=config.RABBIT_HOST,
+            port=config.RABBIT_PORT,
+            credentials=credentials
+        )
     )
     channel = connection.channel()
     channel.queue_declare(

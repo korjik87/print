@@ -6,6 +6,8 @@ load_dotenv()
 RABBIT_HOST = os.getenv("RABBIT_HOST", "localhost")
 RABBIT_PORT = int(os.getenv("RABBIT_PORT", "5672"))
 RABBIT_QUEUE = os.getenv("RABBIT_QUEUE", "print_tasks")
+RABBIT_USER = os.getenv("RABBITMQ_DEFAULT_USER", "root")
+RABBIT_PASS = os.getenv("RABBITMQ_DEFAULT_PASS", "password")
 
 LARAVEL_API = os.getenv("LARAVEL_API", "http://localhost")
 
