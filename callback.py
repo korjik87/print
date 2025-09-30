@@ -1,5 +1,6 @@
 import requests
 import sys
+from . import config
 
 
 def send_callback(result: dict):
