@@ -7,6 +7,7 @@ import time
 import shutil
 
 from . import config
+from .utils import cleanup_file
 
 
 def print_raw(printer: str, tmp_path: str):
