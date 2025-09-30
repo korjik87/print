@@ -6,6 +6,8 @@ import uuid
 import time
 import shutil
 
+from . import config
+
 
 def print_raw(printer: str, tmp_path: str):
     cmd = ["nc", "-w1", printer, "9100"]
@@ -60,7 +62,8 @@ def print_cups(printer: str, tmp_path: str):
 
 def print_file(task: dict):
     printer = str(task.get("printer", config.PRINTER))
-    method = task.get("method", config.DEFAULT_METHOD)
+    printer_worker = config.PRINTER
+    method = config.DEFAULT_METHOD
     job_id = task.get("job_id", str(uuid.uuid4()))
     content_b64 = task.get("content")
     filename = task.get("filename", f"print_job_{uuid.uuid4().hex}.pdf")
@@ -69,6 +72,7 @@ def print_file(task: dict):
         return {
             "file": None,
             "printer": printer,
+            "printer_worker": printer_worker,
             "job_id": job_id,
             "method": method,
             "status": "error",
@@ -84,10 +88,10 @@ def print_file(task: dict):
         if config.DISABLE_PRINT:
             status, error = "success", None
         elif method == "raw":
-            print_raw(printer, tmp_path)
+            print_raw(printer_worker, tmp_path)
             status, error = "success", None
         elif method == "cups":
-            job_id = print_cups(printer, tmp_path)
+            job_id = print_cups(printer_worker, tmp_path)
             status, error = "success", None
         else:
             raise Exception(f"Неизвестный метод печати: {method}")
@@ -100,6 +104,7 @@ def print_file(task: dict):
     return {
         "file": filename,
         "printer": printer,
+        "printer_worker": printer_worker,
         "job_id": job_id,
         "method": method,
         "status": status,
