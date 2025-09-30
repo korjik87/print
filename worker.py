@@ -10,7 +10,7 @@ import tempfile
 import uuid
 import config
 
-MY_PRINTER_ID = str(config.PRINTER_ID)  # id своего принтера
+MY_PRINTER_ID = str(config.PRINTER_ID)
 QUEUE_NAME = f"print_tasks_printer_{MY_PRINTER_ID}"
 
 connection = None
@@ -103,10 +103,24 @@ def callback(ch, method, properties, body):
         ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
         return
 
-    result = print_file(task)
-    send_callback(result)
-    ch.basic_ack(delivery_tag=method.delivery_tag)
-    print("Результат:", result)
+    try:
+        result = print_file(task)
+        send_callback(result)
+    except Exception as e:
+        # глобальная страховка: даже если внутри что-то упало
+        result = {
+            "file": task.get("filename"),
+            "printer": task.get("printer", config.PRINTER),
+            "job_id": task.get("job_id", "unknown"),
+            "method": task.get("method", config.DEFAULT_METHOD),
+            "status": "error",
+            "error": f"Ошибка callback: {e}"
+        }
+        send_callback(result)
+
+    finally:
+        ch.basic_ack(delivery_tag=method.delivery_tag)
+        print("Результат:", result)
 
 
 def graceful_exit(signum, frame):
@@ -138,27 +152,35 @@ def main():
         password=config.RABBIT_PASS
     )
 
-    connection = pika.BlockingConnection(
-        pika.ConnectionParameters(
-            host=config.RABBIT_HOST,
-            port=config.RABBIT_PORT,
-            credentials=credentials
-        )
-    )
-    channel = connection.channel()
-    channel.queue_declare(
-        queue=QUEUE_NAME,
-        durable=True,
-        exclusive=False,
-        auto_delete=False
-    )
-    channel.basic_qos(prefetch_count=1)
-    channel.basic_consume(queue=QUEUE_NAME, on_message_callback=callback)
+    while True:
+        try:
+            connection = pika.BlockingConnection(
+                pika.ConnectionParameters(
+                    host=config.RABBIT_HOST,
+                    port=config.RABBIT_PORT,
+                    credentials=credentials
+                )
+            )
+            channel = connection.channel()
+            channel.queue_declare(
+                queue=QUEUE_NAME,
+                durable=True,
+                exclusive=False,
+                auto_delete=False
+            )
+            channel.basic_qos(prefetch_count=1)
+            channel.basic_consume(queue=QUEUE_NAME, on_message_callback=callback)
 
-    print(f" [*] Worker {MY_PRINTER_ID} запущен. Очередь: {QUEUE_NAME}")
-    if config.DISABLE_PRINT:
-        print(" [!] Внимание: печать ОТКЛЮЧЕНА (тестовый режим)")
-    channel.start_consuming()
+            print(f" [*] Worker {MY_PRINTER_ID} запущен. Очередь: {QUEUE_NAME}")
+            if config.DISABLE_PRINT:
+                print(" [!] Внимание: печать ОТКЛЮЧЕНА (тестовый режим)")
+
+            channel.start_consuming()
+        except Exception as e:
+            print(" [!] Ошибка в main loop:", e, file=sys.stderr)
+            # пауза перед повторным подключением
+            import time
+            time.sleep(5)
 
 
 if __name__ == "__main__":
