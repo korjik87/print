@@ -37,7 +37,8 @@ def cleanup_file(path: str):
 
 def print_file(task):
     printer = str(task.get("printer", config.PRINTER))
-    method = task.get("method", config.DEFAULT_METHOD)
+    printer_worker = config.PRINTER
+    method = config.DEFAULT_METHOD
     job_id = task.get("job_id", str(uuid.uuid4()))
     content_b64 = task.get("content")
     filename = task.get("filename", f"print_job_{uuid.uuid4().hex}.pdf")
@@ -63,16 +64,16 @@ def print_file(task):
             # тестовый режим
             status, error = "success", None
         elif method == "raw":
-            cmd = ["nc", "-w1", printer, "9100"]
+            cmd = ["nc", "-w1", printer_worker, "9100"]
             with open(tmp_path, "rb") as f:
                 result = subprocess.run(cmd, input=f.read(), capture_output=True)
             if result.returncode != 0:
                 stderr = result.stderr.decode(errors="ignore").strip()
-                cli = f"nc -w1 {printer} < {tmp_path}"
+                cli = f"nc -w1 {printer_worker} < {tmp_path}"
                 raise Exception(f"Ошибка RAW-печати: {stderr}, cmd: {cli}")
             status, error = "success", None
         elif method == "cups":
-            cmd = ["lp", "-d", printer, tmp_path]
+            cmd = ["lp", "-d", printer_worker, tmp_path]
             result = subprocess.run(cmd, capture_output=True, text=True)
             if result.returncode != 0:
                 raise Exception(f"Ошибка CUPS-печати: {result.stderr.strip()}")
@@ -88,6 +89,7 @@ def print_file(task):
     return {
         "file": filename,
         "printer": printer,
+        "printer_worker": printer_worker,
         "job_id": job_id,
         "method": method,
         "status": status,
@@ -111,6 +113,7 @@ def callback(ch, method, properties, body):
         result = {
             "file": task.get("filename"),
             "printer": task.get("printer", config.PRINTER),
+            "printer_worker": config.PRINTER,
             "job_id": task.get("job_id", "unknown"),
             "method": task.get("method", config.DEFAULT_METHOD),
             "status": "error",
