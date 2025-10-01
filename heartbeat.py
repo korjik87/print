@@ -22,8 +22,8 @@ def send_heartbeat():
                 timeout=5
             )
             if r.status_code != 200:
-#                 print(f"[heartbeat] Ошибка {r.status_code}: {r.text}")
-                print(f"[heartbeat] Ошибка {r.status_code}:")
+                print(f"[heartbeat] Ошибка {r.status_code}: {r.text}")
+#                 print(f"[heartbeat] Ошибка {r.status_code}:")
         except Exception as e:
             print(f"[heartbeat] Не удалось отправить статус: {e}")
 
