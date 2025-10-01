@@ -21,5 +21,6 @@ if __name__ == "__main__":
 
 
     status = get_printer_status(config.PRINTER)
+    print(f"Статус принтера {config.PRINTER}: {status}")
     logger.info(f"Статус принтера {config.PRINTER}: {status}")
 
