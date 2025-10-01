@@ -91,7 +91,8 @@ def print_file(task: dict):
             "method": method,
             "status": "error",
             "error": "Нет содержимого файла (content)",
-            "log_status": None
+            "log_status": None,
+            "printer_status": get_printer_status(printer_worker),
         }
 
     tmp_path = os.path.join(tempfile.gettempdir(), filename)
@@ -113,14 +114,13 @@ def print_file(task: dict):
 
 
         if config.DISABLE_PRINT:
-            status, error, log_status = "success", None, "disabled"
+            status, error, log_status = "success", None, "print disabled"
         elif method == "raw":
             print_raw(printer_worker, tmp_path)
-            status, error, log_status = "success", None, None
+            status, error, log_status = "success", None, "raw sent"
         elif method == "cups":
-            result = print_cups(printer_worker, tmp_path)
-            job_id = result.get("job_id", job_id)
-            status, error, log_status = result["status"], None, result.get("log_status")
+            job_id, log_status = print_cups(printer_worker, tmp_path)
+            status, error = "success", None
         else:
             raise Exception(f"Неизвестный метод печати: {method}")
 
@@ -137,5 +137,6 @@ def print_file(task: dict):
         "method": method,
         "status": status,
         "error": error,
-        "log_status": log_status
+        "log_status": log_status,
+        "printer_status": get_printer_status(printer_worker)
     }

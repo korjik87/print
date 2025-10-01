@@ -7,6 +7,9 @@ from .utils import setup_logger
 from .utils import get_printer_status
 from .callback import send_callback
 from .rabbit import start_rabbit
+from heartbeat import start_heartbeat_thread
+
+start_heartbeat_thread()
 
 if __name__ == "__main__":
     signal.signal(signal.SIGINT, graceful_exit)
