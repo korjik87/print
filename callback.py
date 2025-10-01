@@ -6,7 +6,7 @@ from . import config
 def send_callback(result: dict):
     """Отправка результата в Laravel API"""
     try:
-        url = f"{config.LARAVEL_API}/api/v1/print-callback"
+        url = f"{config.LARAVEL_API}/v1/print-callback"
         headers = {
             "Authorization": f"Bearer {config.LARAVEL_TOKEN}",
             "Accept": "application/json"
