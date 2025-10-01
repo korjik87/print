@@ -65,28 +65,37 @@ def graceful_exit(signum, frame):
 
 def get_printer_status(printer: str) -> dict:
     """
-    Проверяем состояние принтера через lpstat.
-    Возвращает словарь с флагами и исходным текстом.
+    Возвращает словарь с состоянием принтера через lpstat и lpoptions
     """
-    try:
-        result = subprocess.run(
-            ["lpstat", "-p", printer, "-l"],
-            capture_output=True,
-            text=True
-        )
-        output = result.stdout.lower()
+    status = {
+        "online": True,
+        "paper_out": False,
+        "toner_low": False,
+        "door_open": False,
+        "raw_status": ""
+    }
 
-        status = {
-            "online": "disabled" not in output and "offline" not in output,
-            "paper_out": "paper-out" in output or "media-empty" in output,
-            "toner_low": "toner-low" in output or "marker-supply-low" in output,
-            "door_open": "door-open" in output or "cover-open" in output,
-            "raw": output.strip()
-        }
-        return status
+    try:
+        res = subprocess.run(
+            ["lpstat", "-p", printer],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        out = res.stdout.lower()
+        status["raw_status"] = out.strip()
+
+        if "disabled" in out or "unknown" in out:
+            status["online"] = False
+        if "out of paper" in out:
+            status["paper_out"] = True
+        if "toner" in out and ("low" in out or "empty" in out):
+            status["toner_low"] = True
+        if "door open" in out:
+            status["door_open"] = True
+
     except Exception as e:
-        return {
-            "online": False,
-            "error": str(e),
-            "raw": ""
-        }
+        status["online"] = False
+        status["raw_status"] = f"error: {e}"
+
+    return status
