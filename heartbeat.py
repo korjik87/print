@@ -2,7 +2,7 @@ import threading
 import time
 import requests
 import config
-from utils import get_printer_status
+from .utils import get_printer_status
 
 def send_heartbeat():
     printer_worker = config.PRINTER
