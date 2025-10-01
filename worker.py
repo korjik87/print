@@ -12,6 +12,8 @@ if __name__ == "__main__":
     signal.signal(signal.SIGINT, graceful_exit)
     signal.signal(signal.SIGTERM, graceful_exit)
 
+    status = get_printer_status(config.PRINTER)
+    print(f"Статус принтера {config.PRINTER}: {status}")
     print(f" [*] Worker {config.PRINTER_ID} запущен. Очередь: print_tasks_printer_{config.PRINTER_ID}")
     if config.DISABLE_PRINT:
         print(" [!] Внимание: печать ОТКЛЮЧЕНА (тестовый режим)")
@@ -20,7 +22,6 @@ if __name__ == "__main__":
     logger = setup_logger()
 
 
-    status = get_printer_status(config.PRINTER)
-    print(f"Статус принтера {config.PRINTER}: {status}")
+
     logger.info(f"Статус принтера {config.PRINTER}: {status}")
 
