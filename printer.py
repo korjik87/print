@@ -10,6 +10,7 @@ import time
 
 from . import config
 from .utils import cleanup_file
+from .utils import get_printer_status
 
 
 def print_raw(printer: str, tmp_path: str):

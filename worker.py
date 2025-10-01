@@ -4,6 +4,7 @@ from . import config
 from .utils import graceful_exit
 from .printer import print_file
 from .utils import setup_logger
+from .utils import get_printer_status
 from .callback import send_callback
 from .rabbit import start_rabbit
 
