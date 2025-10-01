@@ -99,6 +99,18 @@ def print_file(task: dict):
         with open(tmp_path, "wb") as f:
             f.write(base64.b64decode(content_b64))
 
+        # Проверяем статус принтера
+        printer_status = get_printer_status(printer_worker)
+        if not printer_status["online"]:
+            raise Exception("Принтер не в сети или отключен")
+        if printer_status["paper_out"]:
+            raise Exception("Нет бумаги в принтере")
+        if printer_status["door_open"]:
+            raise Exception("Открыта крышка принтера")
+        if printer_status.get("error"):
+            raise Exception(f"Ошибка статуса принтера: {printer_status['error']}")
+
+
         if config.DISABLE_PRINT:
             status, error, log_status = "success", None, "disabled"
         elif method == "raw":
