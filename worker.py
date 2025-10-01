@@ -7,7 +7,7 @@ from .utils import setup_logger
 from .utils import get_printer_status
 from .callback import send_callback
 from .rabbit import start_rabbit
-from heartbeat import start_heartbeat_thread
+from .heartbeat import start_heartbeat_thread
 
 start_heartbeat_thread()
 
