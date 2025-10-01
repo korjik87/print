@@ -9,7 +9,7 @@ def send_heartbeat():
     while True:
         status = get_printer_status(printer_worker)
         payload = {
-            "worker_id": config.WORKER_ID,
+            "worker_id": config.PRINTER_ID,
             "printer_id": printer_worker,
             "printer_status": status,
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ")
