@@ -7,10 +7,10 @@ from .utils import get_printer_status
 def send_heartbeat():
     printer_worker = config.PRINTER
     while True:
-        status = get_printer_status(printer)
+        status = get_printer_status(printer_worker)
         payload = {
             "worker_id": config.WORKER_ID,
-            "printer_id": printer,
+            "printer_id": printer_worker,
             "printer_status": status,
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ")
         }
