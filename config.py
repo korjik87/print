@@ -18,3 +18,4 @@ PRINTER = os.getenv("DEFAULT_PRINTER", '192.168.50.131')
 DISABLE_PRINT = os.getenv("DISABLE_PRINT", "false").lower() == "true"
 
 LOG_FILE = os.getenv("LOG_FILE", "/var/log/worker.log")
+LARAVEL_TOKEN = os.getenv("LARAVEL_TOKEN", "")
