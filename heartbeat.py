@@ -1,7 +1,7 @@
 import threading
 import time
 import requests
-import config
+from . import config
 from .utils import get_printer_status
 
 def send_heartbeat():
