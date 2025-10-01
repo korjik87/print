@@ -18,7 +18,7 @@ def send_heartbeat():
             r = requests.post(
                 f"{config.LARAVEL_API}/v1/worker-status",
                 json=payload,
-                headers={"Authorization": f"Bearer {config.API_TOKEN}"},
+                headers={"Authorization": f"Bearer {config.LARAVEL_TOKEN}"},
                 timeout=5
             )
             if r.status_code != 200:
