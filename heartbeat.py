@@ -4,32 +4,42 @@ import requests
 from . import config
 from .utils import get_printer_status
 
-def send_heartbeat():
-    printer_worker = config.PRINTER
+
+def send_heartbeat(logger=None):
     while True:
-        status = get_printer_status(printer_worker)
-        payload = {
-            "worker_id": config.PRINTER_ID,
-            "printer_id": printer_worker,
-            "printer_status": status,
-            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ")
-        }
         try:
+            printer_worker = config.PRINTER
+            url = f"{config.LARAVEL_API}/v1/worker-status"
+            status = get_printer_status(printer_worker)
+            data = {
+                "worker_id": config.PRINTER_ID,
+                "printer_id": printer_worker,
+                "printer_status": status,
+                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
+            }
+
             r = requests.post(
-                f"{config.LARAVEL_API}/v1/worker-status",
-                json=payload,
+                url,
+                json=data,
                 headers={"Authorization": f"Bearer {config.LARAVEL_TOKEN}"},
                 timeout=5
             )
+
             if r.status_code != 200:
                 print(f"[heartbeat] Ошибка {r.status_code}: {r.text}")
-#                 print(f"[heartbeat] Ошибка {r.status_code}:")
-        except Exception as e:
-            print(f"[heartbeat] Не удалось отправить статус: {e}")
 
+            if logger:
+                logger.info(f"Отправлен heartbeat: {data}")
+            else:
+                print(f"Отправлен heartbeat: {data}")
+        except Exception as e:
+            if logger:
+                logger.error(f"Ошибка heartbeat: {e}")
+            else:
+                print(f"Ошибка heartbeat: {e}")
         time.sleep(config.HEARTBEAT_INTERVAL)
 
 
-def start_heartbeat_thread():
-    t = threading.Thread(target=send_heartbeat, daemon=True)
+def start_heartbeat_thread(logger=None):
+    t = threading.Thread(target=send_heartbeat, args=(logger,), daemon=True)
     t.start()
