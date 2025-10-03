@@ -63,7 +63,7 @@ def graceful_exit(signum, frame):
     sys.exit(0)
 
 
-def get_printer_status(printer: str) -> dict:
+def get_printer_status_1(printer: str) -> dict:
     """
     Возвращает словарь с состоянием принтера через lpstat и lpoptions
     """
@@ -100,3 +100,59 @@ def get_printer_status(printer: str) -> dict:
         status["raw_status"] = f"error: {e}"
 
     return status
+
+
+def get_printer_status(printer: str) -> dict:
+    """
+    Комбинированный подход для получения максимальной информации
+    """
+    status = {
+        "online": True,
+        "paper_out": False,
+        "toner_low": False,
+        "door_open": False,
+        "raw_status": ""
+    }
+
+    all_outputs = []
+
+    commands = [
+        ["lpstat", "-p", printer, "-l"],
+        ["lpq", "-P", printer],
+        ["lpoptions", "-p", printer, "-l"]
+    ]
+
+    for cmd in commands:
+        try:
+            res = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            print(res.stdout.lower())
+            all_outputs.append(res.stdout)
+        except:
+            continue
+
+    full_output = "\n".join(all_outputs).lower()
+    status["raw_status"] = full_output
+
+    # Анализ комбинированного вывода
+    if "disabled" in full_status or "printer is not available" in full_status:
+        status["online"] = False
+
+    status_flags = {
+        "paper_out": ["out of paper", "paper out", "paper jam"],
+        "toner_low": ["toner low", "low toner", "toner empty"],
+        "door_open": ["door open", "cover open", "open cover"]
+    }
+
+    for status_key, patterns in status_flags.items():
+        for pattern in patterns:
+            if pattern in full_output:
+                status[status_key] = True
+                break
+
+    return status
+
