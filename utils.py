@@ -119,10 +119,10 @@ def get_detailed_printer_status(printer: str) -> dict:
     all_outputs = []
 
     commands = [
-        ["lpstat", "-p", "-l", printer],
+#         ["lpstat", "-p", "-l", printer],
         ["lpstat", "-l", "-p", printer],
         ["lpq", "-P", printer],
-        ["lpoptions", "-p", "-l",printer],
+#         ["lpoptions", "-p", "-l",printer],
         ["lpoptions", "-l", "-p", printer],
         ["lpstat", "-o"]  # Все задания в очереди
     ]
