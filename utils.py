@@ -83,6 +83,7 @@ def get_printer_status(printer: str) -> dict:
             timeout=5
         )
         out = res.stdout.lower()
+        print (out)
         status["raw_status"] = out.strip()
 
         if "disabled" in out or "unknown" in out:
