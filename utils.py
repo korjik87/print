@@ -143,6 +143,8 @@ def get_detailed_printer_status(printer: str) -> dict:
     # Для анализа приводим к нижнему регистру
     full_output_lower = full_output.lower()
 
+    print(full_output_lower)
+
     # Анализ комбинированного вывода
     if "disabled" in full_output_lower or "printer is not available" in full_output_lower:
         status["online"] = False
