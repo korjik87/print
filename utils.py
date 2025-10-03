@@ -138,8 +138,8 @@ def get_detailed_printer_status(printer: str) -> dict:
     full_output = "\n".join(all_outputs).lower()
     status["raw_status"] = full_output
 
-    # Анализ комбинированного вывода
-    if "disabled" in full_status or "printer is not available" in full_status:
+    # Анализ комбинированного вывода - ИСПРАВЛЕННАЯ СТРОКА
+    if "disabled" in full_output or "printer is not available" in full_output:
         status["online"] = False
 
     status_flags = {
