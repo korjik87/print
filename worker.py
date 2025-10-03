@@ -14,11 +14,7 @@ if __name__ == "__main__":
     signal.signal(signal.SIGINT, graceful_exit)
     signal.signal(signal.SIGTERM, graceful_exit)
 
-    status_detailed = get_detailed_printer_status(config.PRINTER)
-
-
-
-    status = get_printer_status(config.PRINTER)
+    status = get_detailed_printer_status(config.PRINTER)
 
 
 

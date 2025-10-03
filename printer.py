@@ -10,7 +10,7 @@ import time
 
 from . import config
 from .utils import cleanup_file
-from .utils import get_printer_status
+from .utils import get_printer_status, get_detailed_printer_status
 
 
 def print_raw(printer: str, tmp_path: str):
@@ -92,7 +92,7 @@ def print_file(task: dict):
             "status": "error",
             "error": "Нет содержимого файла (content)",
             "log_status": None,
-            "printer_status": get_printer_status(printer_worker),
+            "printer_status": get_detailed_printer_status(printer_worker),
         }
 
     tmp_path = os.path.join(tempfile.gettempdir(), filename)
@@ -102,7 +102,7 @@ def print_file(task: dict):
             f.write(base64.b64decode(content_b64))
 
         # Проверяем статус принтера
-        printer_status = get_printer_status(printer_worker)
+        printer_status = get_detailed_printer_status(printer_worker)
         if not printer_status["online"]:
             raise Exception("Принтер не в сети или отключен")
         if printer_status["paper_out"]:
@@ -138,5 +138,5 @@ def print_file(task: dict):
         "status": status,
         "error": error,
         "log_status": log_status,
-        "printer_status": get_printer_status(printer_worker)
+        "printer_status": get_detailed_printer_status(printer_worker)
     }
