@@ -63,7 +63,7 @@ def graceful_exit(signum, frame):
     sys.exit(0)
 
 
-def get_printer_status_1(printer: str) -> dict:
+def get_printer_status(printer: str) -> dict:
     """
     Возвращает словарь с состоянием принтера через lpstat и lpoptions
     """
@@ -102,7 +102,7 @@ def get_printer_status_1(printer: str) -> dict:
     return status
 
 
-def get_printer_status(printer: str) -> dict:
+def get_detailed_printer_status(printer: str) -> dict:
     """
     Комбинированный подход для получения максимальной информации
     """

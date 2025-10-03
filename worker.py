@@ -1,7 +1,7 @@
 import signal
 import sys
 from . import config
-from .utils import graceful_exit, setup_logger, get_printer_status
+from .utils import graceful_exit, setup_logger, get_printer_status, get_detailed_printer_status
 from .callback import send_callback
 from .rabbit import start_rabbit
 from .heartbeat import start_heartbeat_thread
@@ -14,7 +14,14 @@ if __name__ == "__main__":
     signal.signal(signal.SIGINT, graceful_exit)
     signal.signal(signal.SIGTERM, graceful_exit)
 
+    status_detailed = get_detailed_printer_status(config.PRINTER)
+
+
+
     status = get_printer_status(config.PRINTER)
+
+
+
     logger.info(f"Статус принтера {config.PRINTER}: {status}")
     print(f"Статус принтера {config.PRINTER}: {status}")
 
