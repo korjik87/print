@@ -115,4 +115,5 @@ def print_file(task: dict):
         logger.warning(f"Ошибка при печати: {e}")
         return {"status": "error", "error": str(e), "printer_status": status}
     finally:
-        cleanup_file(tmp_path)
+        if os.path.isfile(tmp_path):
+            cleanup_file(tmp_path)
