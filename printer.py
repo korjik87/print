@@ -80,11 +80,14 @@ def print_file(task: dict):
     if not content_b64:
         return {"status": "error", "error": "Нет содержимого"}
 
-    tmp_path = os.path.join(tempfile.gettempdir(), filename)
-    with open(tmp_path, "wb") as f:
-        f.write(base64.b64decode(content_b64))
-
     try:
+        if config.DISABLE_PRINT:
+            logger.info("Печать отключена (режим отладки)")
+            return {"status": "success", "job_id": job_id, "log_status": "debug"}
+
+
+
+
         # Проверяем состояние принтера
         status = get_detailed_printer_status(printer)
         if not status["online"]:
@@ -96,11 +99,13 @@ def print_file(task: dict):
         if status["door_open"]:
             raise Exception("Открыта крышка")
 
-        # Основная печать
-        if config.DISABLE_PRINT:
-            logger.info("Печать отключена (режим отладки)")
-            return {"status": "success", "job_id": job_id, "log_status": "debug"}
 
+        tmp_path = os.path.join(tempfile.gettempdir(), filename)
+        with open(tmp_path, "wb") as f:
+            f.write(base64.b64decode(content_b64))
+
+
+        # Основная печать
         logger.info(f"🖨️ Отправляем задачу {job_id} на принтер {printer}...")
         result = print_cups(printer, tmp_path)
         result.update({"status": "success"})
