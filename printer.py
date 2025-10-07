@@ -9,9 +9,9 @@ import re
 import time
 
 from . import config
-from .utils import cleanup_file
-from .utils import get_printer_status, get_detailed_printer_status
+from .utils import cleanup_file, get_detailed_printer_status, setup_logger
 
+logger = setup_logger()
 
 def print_raw(printer: str, tmp_path: str):
     cmd = ["nc", "-w1", printer, "9100"]
@@ -23,7 +23,27 @@ def print_raw(printer: str, tmp_path: str):
         raise Exception(f"Ошибка RAW-печати: {stderr}, cmd: {cli}")
 
 
-def print_cups(printer: str, tmp_path: str, timeout: int = 120):
+def wait_until_ready(printer_name: str, max_wait: int = 300, interval: int = 10):
+    """
+    Ждём, пока принтер будет готов к печати.
+    Возвращает True, если готов, иначе False по таймауту.
+    """
+    start_time = time.time()
+    while time.time() - start_time < max_wait:
+        status = get_detailed_printer_status(printer_name)
+        if (
+            status["online"]
+            and not status["paper_out"]
+            and not status["door_open"]
+            and status["jobs_in_queue"] == 0
+        ):
+            return True
+        logger.info(f"⏳ Принтер не готов, ждём... ({status['raw_status'][:80]}...)")
+        time.sleep(interval)
+    return False
+
+
+def print_cups(printer: str, tmp_path: str, timeout: int = 180):
     """
     Отправляем через CUPS.
     Основное решение — exit-код lp.
@@ -37,106 +57,57 @@ def print_cups(printer: str, tmp_path: str, timeout: int = 120):
     if result.returncode != 0:
         raise Exception(f"Ошибка CUPS: {result.stderr.strip()}")
 
-    # Парсим job-id
-    stdout = result.stdout.strip()
-    # Ожидаем строку вида: "request id is printer-123 (1 file(s))"
-    match = re.search(r"request id is (\S+)", stdout)
+    match = re.search(r"request id is (\S+)", result.stdout)
     job_id = match.group(1) if match else None
 
-    # Необязательный мониторинг (чисто для логов)
-    log_status = None
-    if job_id:
-        start_time = time.time()
-        while time.time() - start_time < timeout:
-            status = subprocess.run(
-                ["lpstat", "-W", "not-completed", "-o", printer],
-                capture_output=True,
-                text=True
-            )
-            if job_id not in status.stdout:
-                break
-            time.sleep(1)
+    start = time.time()
+    while time.time() - start < timeout:
+        status = subprocess.run(["lpstat", "-W", "not-completed", "-o", printer],
+                                capture_output=True, text=True)
+        if job_id not in status.stdout:
+            return {"job_id": job_id, "status": "success"}
+        time.sleep(2)
 
-        completed = subprocess.run(
-            ["lpstat", "-W", "completed", "-o", printer],
-            capture_output=True,
-            text=True
-        )
-        if job_id in completed.stdout:
-            log_status = "completed"
-        else:
-            log_status = "unknown"
-
-    return {
-        "job_id": job_id,
-        "status": "success",  # если lp отработал без ошибок
-        "log_status": log_status,
-    }
+    raise Exception("Печать не завершилась в установленное время")
 
 
 def print_file(task: dict):
-    printer = str(task.get("printer", config.PRINTER))
-    printer_worker = config.PRINTER
-    method = config.DEFAULT_METHOD
-    job_id = task.get("job_id", str(uuid.uuid4()))
+    printer = config.PRINTER
+    filename = task.get("filename", f"job_{uuid.uuid4().hex}.pdf")
     content_b64 = task.get("content")
-    filename = task.get("filename", f"print_job_{uuid.uuid4().hex}.pdf")
+    job_id = task.get("job_id", str(uuid.uuid4()))
 
     if not content_b64:
-        return {
-            "file": None,
-            "printer": printer,
-            "printer_worker": printer_worker,
-            "job_id": job_id,
-            "method": method,
-            "status": "error",
-            "error": "Нет содержимого файла (content)",
-            "log_status": None,
-            "printer_status": get_detailed_printer_status(printer_worker),
-        }
+        return {"status": "error", "error": "Нет содержимого"}
 
     tmp_path = os.path.join(tempfile.gettempdir(), filename)
+    with open(tmp_path, "wb") as f:
+        f.write(base64.b64decode(content_b64))
 
     try:
-        with open(tmp_path, "wb") as f:
-            f.write(base64.b64decode(content_b64))
+        # Проверяем состояние принтера
+        status = get_detailed_printer_status(printer)
+        if not status["online"]:
+            raise Exception("Принтер не в сети")
+        if status["jobs_in_queue"] > 0:
+            raise Exception("Очередь печати не пуста")
+        if status["paper_out"]:
+            raise Exception("Нет бумаги")
+        if status["door_open"]:
+            raise Exception("Открыта крышка")
 
-        # Проверяем статус принтера
-        printer_status = get_detailed_printer_status(printer_worker)
-        if not printer_status["online"]:
-            raise Exception("Принтер не в сети или отключен")
-        if printer_status["paper_out"]:
-            raise Exception("Нет бумаги в принтере")
-        if printer_status["door_open"]:
-            raise Exception("Открыта крышка принтера")
-        if printer_status.get("error"):
-            raise Exception(f"Ошибка статуса принтера: {printer_status['error']}")
-
-
+        # Основная печать
         if config.DISABLE_PRINT:
-            status, error, log_status = "success", None, "print disabled"
-        elif method == "raw":
-            print_raw(printer_worker, tmp_path)
-            status, error, log_status = "success", None, "raw sent"
-        elif method == "cups":
-            job_id, log_status = print_cups(printer_worker, tmp_path)
-            status, error = "success", None
-        else:
-            raise Exception(f"Неизвестный метод печати: {method}")
+            logger.info("Печать отключена (режим отладки)")
+            return {"status": "success", "job_id": job_id, "log_status": "debug"}
+
+        logger.info(f"🖨️ Отправляем задачу {job_id} на принтер {printer}...")
+        result = print_cups(printer, tmp_path)
+        result.update({"status": "success"})
+        return result
 
     except Exception as e:
-        status, error, log_status = "error", str(e), None
+        logger.warning(f"Ошибка при печати: {e}")
+        return {"status": "error", "error": str(e), "printer_status": status}
     finally:
         cleanup_file(tmp_path)
-
-    return {
-        "file": filename,
-        "printer": printer,
-        "printer_worker": printer_worker,
-        "job_id": job_id,
-        "method": method,
-        "status": status,
-        "error": error,
-        "log_status": log_status,
-        "printer_status": get_detailed_printer_status(printer_worker)
-    }

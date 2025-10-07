@@ -21,3 +21,4 @@ LOG_FILE = os.getenv("LOG_FILE", "/var/log/worker.log")
 LARAVEL_TOKEN = os.getenv("LARAVEL_TOKEN", "")
 
 HEARTBEAT_INTERVAL = 5
+

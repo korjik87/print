@@ -2,28 +2,23 @@ import subprocess
 import logging
 import sys
 import os
-import signal
+import re
 from datetime import datetime
+from typing import Dict, Any
 
 # Эти переменные будут устанавливаться в worker/rabbit
 connection = None
 channel = None
 
-from . import config
+try:
+    import config
+except ImportError:
+    config = type("config", (), {"LOG_FILE": "worker.log"})  # fallback
 
-logger = None
-
-def cleanup_file(path: str):
-    """Удаление временного файла"""
-    if path and os.path.exists(path):
-        try:
-            os.remove(path)
-        except Exception as e:
-            print(f"Не удалось удалить {path}: {e}", file=sys.stderr)
+logger: logging.Logger = None
 
 
-
-def setup_logger():
+def setup_logger() -> logging.Logger:
     """Инициализация логгера"""
     global logger
     if logger:
@@ -45,7 +40,7 @@ def setup_logger():
 
     # вывод в файл
     log_file = getattr(config, "LOG_FILE", "worker.log")
-    os.makedirs(os.path.dirname(log_file), exist_ok=True)
+    os.makedirs(os.path.dirname(log_file) or ".", exist_ok=True)
     handler_file = logging.FileHandler(log_file)
     handler_file.setFormatter(formatter)
     logger.addHandler(handler_file)
@@ -53,20 +48,27 @@ def setup_logger():
     return logger
 
 
+def cleanup_file(path: str):
+    """Удаление временного файла"""
+    if path and os.path.exists(path):
+        try:
+            os.remove(path)
+            logger.info(f"Удален временный файл {path}")
+        except Exception as e:
+            logger.error(f"Не удалось удалить {path}: {e}")
+
+
 def graceful_exit(signum, frame):
     """Корректное завершение работы"""
     global logger
     if not logger:
         logger = setup_logger()
-
     logger.info("Останавливаю worker...")
     sys.exit(0)
 
 
-def get_printer_status(printer: str) -> dict:
-    """
-    Возвращает словарь с состоянием принтера через lpstat и lpoptions
-    """
+def get_printer_status(printer: str) -> Dict[str, Any]:
+    """Базовый статус принтера через lpstat"""
     status = {
         "online": True,
         "paper_out": False,
@@ -74,7 +76,6 @@ def get_printer_status(printer: str) -> dict:
         "door_open": False,
         "raw_status": ""
     }
-
     try:
         res = subprocess.run(
             ["lpstat", "-p", printer],
@@ -82,17 +83,17 @@ def get_printer_status(printer: str) -> dict:
             text=True,
             timeout=5
         )
-        out = res.stdout.lower()
-        print (out)
-        status["raw_status"] = out.strip()
+        out = res.stdout.strip()
+        status["raw_status"] = out
+        out_lower = out.lower()
 
-        if "disabled" in out or "unknown" in out:
+        if "disabled" in out_lower or "unknown" in out_lower:
             status["online"] = False
-        if "out of paper" in out:
+        if any(err in out_lower for err in ["out of paper", "paper jam"]):
             status["paper_out"] = True
-        if "toner" in out and ("low" in out or "empty" in out):
+        if "toner" in out_lower and any(t in out_lower for t in ["low", "empty"]):
             status["toner_low"] = True
-        if "door open" in out:
+        if any(door in out_lower for door in ["door open", "cover open"]):
             status["door_open"] = True
 
     except Exception as e:
@@ -102,11 +103,15 @@ def get_printer_status(printer: str) -> dict:
     return status
 
 
-def get_detailed_printer_status(printer: str) -> dict:
+def get_detailed_printer_status(printer: str) -> Dict[str, Any]:
     """
-    Комбинированный подход для получения максимальной информации о статусе принтера
+    Подробный статус принтера:
+      - флаги состояния
+      - количество заданий в очереди
+      - ID текущей задачи
+      - "сырое" состояние для отладки
     """
-    status = {
+    status: Dict[str, Any] = {
         "online": True,
         "paper_out": False,
         "toner_low": False,
@@ -116,27 +121,19 @@ def get_detailed_printer_status(printer: str) -> dict:
         "raw_status": ""
     }
 
-    all_outputs = []
-
     commands = [
-#         ["lpstat", "-p", "-l", printer],
         ["lpstat", "-l", "-p", printer],
         ["lpq", "-P", printer],
-#         ["lpoptions", "-p", "-l",printer],
         ["lpoptions", "-l", "-p", printer],
-        ["lpstat", "-o"]  # Все задания в очереди
+        ["lpstat", "-o"]
     ]
 
+    all_outputs = []
     for cmd in commands:
         try:
-            res = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=5
-            )
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
             all_outputs.append(res.stdout)
-        except:
+        except Exception:
             continue
 
     full_output = "\n".join(all_outputs)
@@ -145,109 +142,41 @@ def get_detailed_printer_status(printer: str) -> dict:
     # Для анализа приводим к нижнему регистру
     full_output_lower = full_output.lower()
 
-    # Анализ комбинированного вывода
-    if "disabled" in full_output_lower or "printer is not available" in full_output_lower:
-        status["online"] = False
-
-    # Обновленные статус-флаги с учетом CUPS ошибок
+    # Флаги состояния
     status_flags = {
+        "online": ["disabled", "printer is not available", "Не удается получить статус принтера"],
         "paper_out": [
-            "out of paper",
-            "paper out",
-            "paper jam",
-            "media-empty-error",        # CUPS ошибка пустого лотка
-            "media-needed-error",       # CUPS ошибка необходимости бумаги
-            "cups-waiting-for-job-completed media-empty-error media-needed-error",  # Полная строка из lpstat
-            "нет бумаги",               # Русский вариант
-            "закончилась бумага",       # Русский вариант
-            "загрузите бумагу"          # Русский вариант
+            "out of paper", "paper out", "paper jam",
+            "media-empty-error", "media-needed-error",
+            "нет бумаги", "закончилась бумага", "загрузите бумагу"
         ],
-        "toner_low": [
-            "toner low",
-            "low toner",
-            "toner empty",
-            "заканчивается тонер",      # Русский вариант
-            "тонер низкий",             # Русский вариант
-            "замените тонер"            # Русский вариант
-        ],
-        "door_open": [
-            "door open",
-            "cover open",
-            "open cover",
-            "откройте дверцу",          # Русский вариант
-            "дверца открыта",           # Русский вариант
-            "крышка открыта"            # Русский вариант
-        ]
+        "toner_low": ["toner low", "low toner", "toner empty", "тонер низкий", "замените тонер"],
+        "door_open": ["door open", "cover open", "open cover", "дверца открыта", "крышка открыта"]
     }
 
-    # ОСНОВНОЕ ИСПРАВЛЕНИЕ: Поиск в оригинальном выводе БЕЗ приведения к нижнему регистру
-    # для CUPS ошибок, которые всегда на английском
-    for status_key, patterns in status_flags.items():
-        for pattern in patterns:
-            # Для английских ошибок ищем в оригинальном выводе
-            if any(eng_keyword in pattern for eng_keyword in ['media-empty-error', 'media-needed-error', 'cups-waiting']):
-                if pattern in full_output:  # Ищем в оригинальном выводе
-                    status[status_key] = True
-                    break
-            else:
-                # Для остальных ищем в нижнем регистре
-                if pattern in full_output_lower:
-                    status[status_key] = True
-                    break
+    # Поиск ошибок
+    for key, patterns in status_flags.items():
+        for p in patterns:
+            check_output = full_output if any(e in p for e in ["media-empty-error", "media-needed-error"]) else full_output_lower
+            if p in check_output:
+                status[key if key != "online" else "online"] = False if key == "online" else True
+                break
 
-    # Определение текущего задания (работает с русским выводом)
-    if "сейчас печатает" in full_output_lower:
-        # Ищем ID текущего задания в русском выводе
-        job_match = re.search(rf"{re.escape(printer)}-(\d+)", full_output, re.IGNORECASE)
-        if job_match:
-            status["current_job_id"] = job_match.group(1)
-
-    # Подсчет задач в очереди для конкретного принтера
+    # Подсчет заданий в очереди
     try:
-        # Используем lpstat -o и фильтруем по имени принтера
-        queue_cmd = ["lpstat", "-o"]
-        queue_result = subprocess.run(
-            queue_cmd,
-            capture_output=True,
-            text=True,
-            timeout=5
-        )
+        queue_res = subprocess.run(["lpstat", "-o"], capture_output=True, text=True, timeout=5)
+        printer_jobs = [line for line in queue_res.stdout.splitlines() if printer.lower() in line.lower() and line.strip()]
+        status["jobs_in_queue"] = len(printer_jobs)
+    except Exception:
+        status["jobs_in_queue"] = 0
 
-        if queue_result.returncode == 0:
-            # Фильтруем строки, относящиеся к нашему принтеру
-            printer_jobs = [line for line in queue_result.stdout.split('\n')
-                          if printer.lower() in line.lower() and line.strip()]
-            status["jobs_in_queue"] = len(printer_jobs)
+    # Определение текущей задачи (по ID)
+    match = re.search(rf"{re.escape(printer)}-(\d+)", full_output, re.IGNORECASE)
+    if match:
+        status["current_job_id"] = match.group(1)
 
-    except Exception as e:
-        # Резервный метод через lpq
-        try:
-            lpq_cmd = ["lpq", "-P", printer]
-            lpq_result = subprocess.run(
-                lpq_cmd,
-                capture_output=True,
-                text=True,
-                timeout=5
-            )
-            if lpq_result.returncode == 0:
-                # Парсим вывод lpq для подсчета заданий
-                lines = lpq_result.stdout.split('\n')
-                # Ищем строки с номерами заданий (пропускаем заголовки)
-                job_lines = [line for line in lines if line.strip() and line.split()[0].isdigit()]
-                status["jobs_in_queue"] = len(job_lines)
-        except:
-            status["jobs_in_queue"] = 0
-
-    # ДОПОЛНИТЕЛЬНАЯ ПРОВЕРКА: Явный поиск CUPS ошибок в оригинальном выводе
-    cups_paper_errors = [
-        "media-empty-error",
-        "media-needed-error"
-    ]
-
-    for error in cups_paper_errors:
-        if error in full_output:  # Ищем в оригинальном выводе
-            status["paper_out"] = True
-            break
+    # Проверка онлайн: если принтер оффлайн или есть ошибки, задачи не отправляем
+    status["can_print"] = status["online"] and not (status["paper_out"] or status["toner_low"] or status["door_open"])
 
     return status
 
