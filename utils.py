@@ -50,7 +50,7 @@ def setup_logger() -> logging.Logger:
 
 def cleanup_file(path: str):
     """Удаление временного файла"""
-    if path and os.path.exists(path):
+    if path and os.path.exists(path) and os.path.isfile(path):
         try:
             os.remove(path)
             logger.info(f"Удален временный файл {path}")

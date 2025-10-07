@@ -76,6 +76,7 @@ def print_file(task: dict):
     filename = task.get("filename", f"job_{uuid.uuid4().hex}.pdf")
     content_b64 = task.get("content")
     job_id = task.get("job_id", str(uuid.uuid4()))
+    tmp_path = os.path.join(tempfile.gettempdir(), filename)
 
     if not content_b64:
         return {"status": "error", "error": "Нет содержимого"}
@@ -100,7 +101,7 @@ def print_file(task: dict):
             raise Exception("Открыта крышка")
 
 
-        tmp_path = os.path.join(tempfile.gettempdir(), filename)
+
         with open(tmp_path, "wb") as f:
             f.write(base64.b64decode(content_b64))
 
@@ -115,5 +116,4 @@ def print_file(task: dict):
         logger.warning(f"Ошибка при печати: {e}")
         return {"status": "error", "error": str(e), "printer_status": status}
     finally:
-        if os.path.isfile(tmp_path):
-            cleanup_file(tmp_path)
+        cleanup_file(tmp_path)
