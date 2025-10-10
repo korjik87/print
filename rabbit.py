@@ -7,7 +7,7 @@ import traceback
 from . import config
 from .printer import print_file
 from .callback import send_callback
-from .utils import setup_logger
+from .utils import setup_logger, update_current_job_id
 
 logger = setup_logger()
 
@@ -27,6 +27,8 @@ def process_task(task):
 
     if result["status"] == "success":
         logger.info(f"[OK] Задача {result['job_id']} успешно напечатана.")
+        # После успешной печати очищаем текущий job_id
+        update_current_job_id({})
         return True
     else:
         logger.warning(f"[WAIT] Принтер недоступен: {result['error']}")

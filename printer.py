@@ -9,7 +9,7 @@ import re
 import time
 
 from . import config
-from .utils import cleanup_file, get_detailed_printer_status, setup_logger
+from .utils import cleanup_file, get_detailed_printer_status, setup_logger, update_current_job_id
 
 logger = setup_logger()
 
@@ -77,6 +77,7 @@ def print_file(task: dict):
     content_b64 = task.get("content")
     job_id = task.get("job_id", str(uuid.uuid4()))
     tmp_path = os.path.join(tempfile.gettempdir(), filename)
+    update_current_job_id(task)
 
     if not content_b64:
         return {"status": "error", "error": "Нет содержимого"}

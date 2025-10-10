@@ -5,7 +5,6 @@ from .utils import graceful_exit, setup_logger, get_printer_status, get_detailed
 from .callback import send_callback
 from .rabbit import start_rabbit
 from .heartbeat import start_heartbeat_thread
-from .printer import print_file
 
 # создаём логгер сразу, до всего остального
 logger = setup_logger()

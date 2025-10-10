@@ -3,6 +3,7 @@ import logging
 import sys
 import os
 import re
+import threading
 from datetime import datetime
 from typing import Dict, Any
 
@@ -16,6 +17,27 @@ except ImportError:
     config = type("config", (), {"LOG_FILE": "worker.log"})  # fallback
 
 logger: logging.Logger = None
+
+
+# Глобальная переменная для хранения текущего job_id
+current_job_id = None
+current_job_lock = threading.Lock()
+
+def update_current_job_id(task):
+    """
+    Обновляет текущий job_id из задачи RabbitMQ
+    """
+    global current_job_id
+    with current_job_lock:
+        current_job_id = task.get('job_id')
+
+def get_current_job_id():
+    """
+    Возвращает текущий job_id (потокобезопасно)
+    """
+    global current_job_id
+    with current_job_lock:
+        return current_job_id
 
 
 def setup_logger() -> logging.Logger:
@@ -169,6 +191,8 @@ def get_detailed_printer_status(printer: str) -> Dict[str, Any]:
         status["jobs_in_queue"] = len(printer_jobs)
     except Exception:
         status["jobs_in_queue"] = 0
+
+    status["job_id"] = get_current_job_id()
 
     # Определение текущей задачи (по ID)
     match = re.search(rf"{re.escape(printer)}-(\d+)", full_output, re.IGNORECASE)

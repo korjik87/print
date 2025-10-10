@@ -2,7 +2,7 @@ import threading
 import time
 import requests
 from . import config
-from .utils import get_printer_status, get_detailed_printer_status
+from .utils import get_printer_status, get_detailed_printer_status, get_current_job_id
 
 
 def send_heartbeat(logger=None):
@@ -11,9 +11,12 @@ def send_heartbeat(logger=None):
             printer_worker = config.PRINTER
             url = f"{config.LARAVEL_API}/v1/worker-status"
             status = get_detailed_printer_status(printer_worker)
+            job_id = get_current_job_id()
+
             data = {
                 "worker_id": config.PRINTER_ID,
                 "printer_id": printer_worker,
+                "job_id": job_id,
                 "printer_status": status,
                 "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
             }
