@@ -1,5 +1,6 @@
 import threading
 import time
+from datetime import datetime, timezone
 import requests
 from . import config
 from .utils import get_printer_status, get_detailed_printer_status, get_current_job_id
@@ -18,7 +19,7 @@ def send_heartbeat(logger=None):
                 "printer_id": printer_worker,
                 "job_id": job_id,
                 "printer_status": status,
-                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
+                "timestamp": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
             }
 
             r = requests.post(
