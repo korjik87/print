@@ -2,7 +2,6 @@ import signal
 import sys
 from . import config
 from .utils import graceful_exit, setup_logger, get_printer_status, get_detailed_printer_status
-from .callback import send_callback
 from .rabbit import start_rabbit
 from .heartbeat import start_heartbeat_thread
 
