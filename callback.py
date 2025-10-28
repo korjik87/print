@@ -1,6 +1,7 @@
 import requests
 import sys
 from . import config
+from .utils import get_current_job_id
 
 
 def send_callback(result: dict):
@@ -11,7 +12,11 @@ def send_callback(result: dict):
             "Authorization": f"Bearer {config.LARAVEL_TOKEN}",
             "Accept": "application/json"
         }
-        response = requests.post(url, json=result, headers=headers, timeout=5)
+        data = {
+            "job_id": get_current_job_id(),
+        }
+
+        response = requests.post(url, json=data, headers=headers, timeout=5)
 
         if response.status_code != 200:
             print(f"[!] Ошибка callback: {response.status_code} {response.text}", file=sys.stderr)

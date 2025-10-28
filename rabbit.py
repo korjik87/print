@@ -22,9 +22,9 @@ def process_task(task):
       - False, если нужно повторить позже
     """
     result = print_file(task)
-    send_callback(result)
 
     if result["status"] == "success":
+        send_callback(result)
         logger.info(f"[OK] Задача {result['job_id']} успешно напечатана.")
         # После успешной печати очищаем текущий job_id
         update_current_job_id({})
