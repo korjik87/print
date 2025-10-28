@@ -19,19 +19,60 @@ def process_task(task):
     Обработка одной задачи печати.
     Возвращает:
       - True, если напечатано успешно
-      - False, если нужно повторить позже
+      - False, если нужно повторить позже (временная ошибка)
+      - None, если фатальная ошибка (не повторять)
     """
-    result = print_file(task)
+    try:
+        result = print_file(task)
+    except Exception as e:
+        logger.error(f"Критическая ошибка в print_file: {e}\n{traceback.format_exc()}")
+        # Отправляем callback с ошибкой
+        send_callback({
+            "status": "error",
+            "job_id": task.get("job_id"),
+            "error": f"Критическая ошибка: {str(e)}"
+        })
+        return None  # Фатальная ошибка
 
     if result["status"] == "success":
         send_callback(result)
         logger.info(f"[OK] Задача {result['job_id']} успешно напечатана.")
-        # После успешной печати очищаем текущий job_id
         update_current_job_id({})
         return True
     else:
-        logger.warning(f"[WAIT] Принтер недоступен: {result['error']}")
-        return False
+        error_msg = result.get("error", "")
+        logger.warning(f"[WAIT] Ошибка печати: {error_msg}")
+
+        # Различаем временные и фатальные ошибки
+        if "недоступен" in error_msg.lower() or "timeout" in error_msg.lower() or "wait" in error_msg.lower():
+            return False  # Временная ошибка - повторяем
+        else:
+            # Фатальная ошибка - не повторяем
+            send_callback({
+                "status": "error",
+                "job_id": task.get("job_id"),
+                "error": error_msg
+            })
+            return None
+
+def wait_with_connection_check(seconds, connection):
+    """
+    Ожидание с проверкой соединения
+    Возвращает True если соединение активно, False если разорвано
+    """
+    interval = 0.5
+    steps = int(seconds / interval)
+    for i in range(steps):
+        if connection is None or connection.is_closed:
+            return False
+        time.sleep(interval)
+        # Периодически обрабатываем события соединения
+        if i % 10 == 0:  # Каждые 5 секунд
+            try:
+                connection.process_data_events()
+            except:
+                return False
+    return True
 
 def callback(ch, method, properties, body):
     """
@@ -41,61 +82,62 @@ def callback(ch, method, properties, body):
 
     try:
         task = json.loads(body.decode())
+        logger.info(f"Получена задача: {task.get('job_id', 'unknown')}")
     except Exception as e:
         logger.error(f"Ошибка: неверный формат задачи ({e})")
-        print("Ошибка: неверный формат задачи", e, file=sys.stderr)
         ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
         return
 
-    max_retries = 10
+    max_retries = 5  # Уменьшено количество попыток
     retry_count = 0
 
-    while retry_count < max_retries:
+    while retry_count <= max_retries:
         try:
             # Проверяем соединение перед обработкой
             if connection is None or connection.is_closed:
                 logger.warning("Соединение разорвано, прерываем обработку задачи")
-                # Не подтверждаем сообщение - оно вернется в очередь
                 return
 
-            success = process_task(task)
-            if success:
+            result = process_task(task)
+
+            if result is True:
+                # Успех - подтверждаем сообщение
                 ch.basic_ack(delivery_tag=method.delivery_tag)
                 return
-            else:
+            elif result is False:
+                # Временная ошибка - повторяем после ожидания
                 retry_count += 1
-                logger.info(f"Повторная попытка {retry_count}/{max_retries} через 15 сек")
-
-                # Короткие интервалы сна с проверкой соединения
-                for i in range(30):  # 15 сек = 30 × 0.5 сек
-                    if connection is None or connection.is_closed:
+                if retry_count <= max_retries:
+                    logger.info(f"Повторная попытка {retry_count}/{max_retries} через 15 сек")
+                    if not wait_with_connection_check(15, connection):
                         logger.warning("Соединение разорвано во время ожидания")
                         return
-                    time.sleep(0.5)
-                    # Периодически обрабатываем события соединения
-                    if i % 10 == 0:  # Каждые 5 секунд
-                        try:
-                            connection.process_data_events()
-                        except:
-                            logger.warning("Ошибка при обработке событий соединения")
-                            return
+                else:
+                    logger.warning(f"Превышено количество попыток для задачи {task.get('job_id')}")
+                    # Возвращаем задачу в очередь
+                    ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
+                    return
+            else:
+                # Фатальная ошибка - подтверждаем и не повторяем
+                logger.error(f"Фатальная ошибка для задачи {task.get('job_id')}")
+                ch.basic_ack(delivery_tag=method.delivery_tag)
+                return
 
         except Exception as e:
             logger.error(f"Ошибка обработки задачи: {e}\n{traceback.format_exc()}")
             retry_count += 1
-
-            # Короткое ожидание перед повторной попыткой
-            for i in range(20):  # 10 сек = 20 × 0.5 сек
-                if connection is None or connection.is_closed:
+            if retry_count <= max_retries:
+                if not wait_with_connection_check(10, connection):
                     return
-                time.sleep(0.5)
-                if i % 10 == 0:
-                    try:
-                        connection.process_data_events()
-                    except:
-                        return
+            else:
+                logger.error("Превышено количество попыток из-за исключений")
+                try:
+                    ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
+                except:
+                    logger.error("Не удалось отправить NACK - соединение разорвано")
+                return
 
-    # Если превышено количество попыток - отказываемся от задачи
+    # Если вышли из цикла - возвращаем в очередь
     try:
         ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
     except:

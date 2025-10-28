@@ -1,8 +1,10 @@
 import requests
 import sys
+import traceback
 from . import config
-from .utils import get_current_job_id
+from .utils import setup_logger
 
+logger = setup_logger()
 
 def send_callback(result: dict):
     """Отправка результата в Laravel API"""
@@ -10,16 +12,27 @@ def send_callback(result: dict):
         url = f"{config.LARAVEL_API}/v1/print-callback"
         headers = {
             "Authorization": f"Bearer {config.LARAVEL_TOKEN}",
-            "Accept": "application/json"
+            "Accept": "application/json",
+            "Content-Type": "application/json"
         }
+
+        # Используем job_id из результата, а не из глобального состояния
         data = {
-            "job_id": get_current_job_id(),
+            "job_id": result.get("job_id"),
+            "status": result.get("status"),
+            "error": result.get("error", "")
         }
 
-        response = requests.post(url, json=data, headers=headers, timeout=5)
+        logger.info(f"Отправка callback для задачи {data['job_id']}: {data['status']}")
 
-        if response.status_code != 200:
-            print(f"[!] Ошибка callback: {response.status_code} {response.text}", file=sys.stderr)
+        response = requests.post(url, json=data, headers=headers, timeout=10)
 
+        if response.status_code == 200:
+            logger.info(f"✅ Callback успешно отправлен для задачи {data['job_id']}")
+        else:
+            logger.error(f"❌ Ошибка callback: {response.status_code} {response.text}")
+
+    except requests.exceptions.Timeout:
+        logger.error("⚠️ Timeout при отправке callback")
     except Exception as e:
-        print("Ошибка при возврате результата:", e, file=sys.stderr)
+        logger.error(f"❌ Ошибка при отправке callback: {e}\n{traceback.format_exc()}")
