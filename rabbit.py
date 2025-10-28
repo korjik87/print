@@ -26,13 +26,12 @@ def process_task(task):
         result = print_file(task)
     except Exception as e:
         logger.error(f"Критическая ошибка в print_file: {e}\n{traceback.format_exc()}")
-        # Отправляем callback с ошибкой
         send_callback({
             "status": "error",
             "job_id": task.get("job_id"),
             "error": f"Критическая ошибка: {str(e)}"
         })
-        return None  # Фатальная ошибка
+        return None
 
     if result["status"] == "success":
         send_callback(result)
@@ -41,10 +40,15 @@ def process_task(task):
         return True
     else:
         error_msg = result.get("error", "")
-        logger.warning(f"[WAIT] Ошибка печати: {error_msg}")
+        logger.warning(f"[ERROR] Ошибка печати: {error_msg}")
 
-        # Различаем временные и фатальные ошибки
-        if "недоступен" in error_msg.lower() or "timeout" in error_msg.lower() or "wait" in error_msg.lower():
+        # Временные ошибки (повторяем)
+        temporary_errors = [
+            "недоступен", "timeout", "wait", "занят",
+            "очередь", "busy", "unavailable"
+        ]
+
+        if any(keyword in error_msg.lower() for keyword in temporary_errors):
             return False  # Временная ошибка - повторяем
         else:
             # Фатальная ошибка - не повторяем

@@ -6,7 +6,7 @@ import uuid
 import time
 import shutil
 import re
-import time
+import traceback
 
 from . import config
 from .utils import cleanup_file, get_detailed_printer_status, setup_logger, update_current_job_id
@@ -22,41 +22,52 @@ def print_raw(printer: str, tmp_path: str):
         cli = f"nc -w1 {printer} < {tmp_path}"
         raise Exception(f"Ошибка RAW-печати: {stderr}, cmd: {cli}")
 
-
-def wait_until_ready(printer_name: str, max_wait: int = 300, interval: int = 10):
+def wait_for_print_completion(printer_name: str, expected_job_id: str, timeout: int = 180):
     """
-    Ждём, пока принтер будет готов к печати.
-    Возвращает True, если готов, иначе False по таймауту.
+    Ожидает завершения задания печати по job_id
     """
+    logger.info(f"⏳ Ожидаем завершения печати задания {expected_job_id}...")
     start_time = time.time()
-    while time.time() - start_time < max_wait:
-        status = get_detailed_printer_status(printer_name)
-        if (
-            status["online"]
-            and not status["paper_out"]
-            and not status["door_open"]
-            and status["jobs_in_queue"] == 0
-        ):
-            return True
-        logger.info(f"⏳ Принтер не готов, ждём... ({status['raw_status'][:80]}...)")
-        time.sleep(interval)
+
+    while time.time() - start_time < timeout:
+        try:
+            # Получаем статус принтера
+            status = get_detailed_printer_status(printer_name)
+
+            # Если задание завершено и исчезло из очереди
+            if status["jobs_in_queue"] == 0:
+                logger.info(f"✅ Задание {expected_job_id} завершено")
+                return True
+
+            # Если задание все еще в очереди
+            current_job_id = status.get("current_job_id")
+            if current_job_id and str(current_job_id) != str(expected_job_id):
+                logger.warning(f"⚠️ В очереди другое задание: {current_job_id}")
+                # Продолжаем ждать - возможно наше задание следующее
+
+            logger.info(f"⏳ Задание еще печатается... (очередь: {status['jobs_in_queue']})")
+            time.sleep(5)
+
+        except Exception as e:
+            logger.error(f"Ошибка при проверке статуса печати: {e}")
+            time.sleep(5)
+
+    logger.error(f"❌ Таймаут ожидания печати задания {expected_job_id}")
     return False
 
-
-def print_cups(printer: str, tmp_path: str, timeout: int = 180):
+def print_cups(printer: str, tmp_path: str, job_id: str, timeout: int = 180):
     """
-    Отправляем через CUPS.
-    Основное решение — exit-код lp.
-    Статус задачи через lpstat используется только для логов.
+    Отправляем через CUPS и ждем завершения печати.
     """
     result = {
-        "job_id": "",
+        "job_id": job_id,
         "printer": config.PRINTER_ID,
         "status": "success",
         "error": None
     }
 
     try:
+        # Отправляем задание на печать
         lp_result = subprocess.run(
             ["lp", "-d", printer, "-o", "media=A4", tmp_path],
             capture_output=True,
@@ -66,20 +77,20 @@ def print_cups(printer: str, tmp_path: str, timeout: int = 180):
         if lp_result.returncode != 0:
             raise Exception(f"Ошибка CUPS: {lp_result.stderr.strip()}")
 
+        # Извлекаем внутренний job_id CUPS
         match = re.search(r"request id is (\S+)", lp_result.stdout)
-        job_id = match.group(1) if match else None
-        result["job_id"] = job_id
+        cups_job_id = match.group(1) if match else None
 
-        # Ожидаем завершения печати
-        start = time.time()
-        while time.time() - start < timeout:
-            status = subprocess.run(["lpstat", "-W", "not-completed", "-o", printer],
-                                    capture_output=True, text=True)
-            if job_id not in status.stdout:
-                return result
-            time.sleep(2)
+        if cups_job_id:
+            logger.info(f"📋 CUPS job ID: {cups_job_id}")
+        else:
+            logger.warning("⚠️ Не удалось извлечь CUPS job ID")
 
-        raise Exception("Печать не завершилась в установленное время")
+        # Ждем завершения печати
+        if not wait_for_print_completion(printer, cups_job_id or job_id, timeout):
+            raise Exception("Печать не завершилась в установленное время")
+
+        return result
 
     except Exception as e:
         result.update({
@@ -88,6 +99,50 @@ def print_cups(printer: str, tmp_path: str, timeout: int = 180):
         })
         return result
 
+def check_printer_ready(printer: str, max_wait: int = 60):
+    """
+    Проверяет, готов ли принтер к печати.
+    Возвращает True если готов, False если нет.
+    """
+    logger.info(f"🔍 Проверяем состояние принтера {printer}...")
+    start_time = time.time()
+
+    while time.time() - start_time < max_wait:
+        try:
+            status = get_detailed_printer_status(printer)
+
+            if not status["online"]:
+                logger.warning("Принтер не в сети")
+                return False
+
+            if status["paper_out"]:
+                logger.warning("Нет бумаги")
+                return False
+
+            if status["door_open"]:
+                logger.warning("Открыта крышка")
+                return False
+
+            # Если принтер готов и очередь пуста - можно печатать
+            if status["can_print"] and status["jobs_in_queue"] == 0:
+                logger.info("✅ Принтер готов к печати")
+                return True
+
+            # Если есть задания в очереди, ждем их завершения
+            if status["jobs_in_queue"] > 0:
+                current_job = status.get("current_job_id")
+                logger.info(f"⏳ Принтер занят заданием {current_job}, ждем...")
+                time.sleep(5)
+                continue
+
+            time.sleep(2)
+
+        except Exception as e:
+            logger.error(f"Ошибка при проверке принтера: {e}")
+            time.sleep(5)
+
+    logger.error("❌ Принтер не готов в течение заданного времени")
+    return False
 
 def print_file(task: dict):
     printer = config.PRINTER
@@ -95,9 +150,11 @@ def print_file(task: dict):
     content_b64 = task.get("content")
     job_id = task.get("job_id", str(uuid.uuid4()))
     tmp_path = os.path.join(tempfile.gettempdir(), filename)
+
+    # Обновляем текущий job_id перед началом печати
     update_current_job_id(task)
 
-    # Базовый ответ с обязательными полями
+    # Базовый ответ
     response = {
         "job_id": job_id,
         "printer": printer,
@@ -107,7 +164,7 @@ def print_file(task: dict):
     if not content_b64:
         response.update({
             "status": "error",
-            "error": "Нет содержимого"
+            "error": "Нет содержимого для печати"
         })
         return response
 
@@ -117,34 +174,45 @@ def print_file(task: dict):
             response["log_status"] = "debug"
             return response
 
-        # Проверяем состояние принтера
-        status = get_detailed_printer_status(printer)
-        if not status["online"]:
-            raise Exception("Принтер не в сети")
-        if status["jobs_in_queue"] > 0:
-            raise Exception("Очередь печати не пуста")
-        if status["paper_out"]:
-            raise Exception("Нет бумаги")
-        if status["door_open"]:
-            raise Exception("Открыта крышка")
+        logger.info(f"🖨️ Начинаем обработку задания {job_id}")
 
+        # Проверяем готовность принтера
+        if not check_printer_ready(printer):
+            response.update({
+                "status": "error",
+                "error": "Принтер не готов к печати"
+            })
+            return response
+
+        # Сохраняем файл
         with open(tmp_path, "wb") as f:
             f.write(base64.b64decode(content_b64))
+        logger.info(f"💾 Файл сохранен: {tmp_path}")
 
-        # Основная печать
-        logger.info(f"🖨️ Отправляем задачу {job_id} на принтер {printer}...")
-        print_result = print_cups(printer, tmp_path)
+        # Выполняем печать
+        logger.info(f"🚀 Отправляем задание {job_id} на печать...")
+        print_result = print_cups(printer, tmp_path, job_id)
 
-        # Обновляем ответ данными из print_cups
+        # Обновляем ответ
         response.update(print_result)
+
+        if response["status"] == "success":
+            logger.info(f"🎉 Задание {job_id} успешно распечатано")
+        else:
+            logger.error(f"❌ Ошибка печати задания {job_id}: {response['error']}")
+
         return response
 
     except Exception as e:
-        logger.warning(f"Ошибка при печати: {e}")
+        error_msg = f"Критическая ошибка: {str(e)}"
+        logger.error(f"❌ {error_msg}\n{traceback.format_exc()}")
         response.update({
             "status": "error",
-            "error": str(e)
+            "error": error_msg
         })
         return response
     finally:
+        # Очищаем текущий job_id после завершения печати
+        update_current_job_id({})
+        # Удаляем временный файл
         cleanup_file(tmp_path)
