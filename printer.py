@@ -67,6 +67,19 @@ def print_cups(printer: str, tmp_path: str, job_id: str, timeout: int = 180):
     }
 
     try:
+        # Проверяем статус принтера перед отправкой
+        printer_status = get_detailed_printer_status(printer)
+
+        # Проверка статусов принтера
+        if not printer_status["online"]:
+            raise Exception("Принтер не в сети")
+        if printer_status.get("paused", False):
+            raise Exception("Принтер на паузе")
+        if printer_status.get("paper_out", False):
+            raise Exception("Нет бумаги")
+        if printer_status.get("door_open", False):
+            raise Exception("Открыта крышка")
+
         # Отправляем задание на печать
         lp_result = subprocess.run(
             ["lp", "-d", printer, "-o", "media=A4", tmp_path],
@@ -75,7 +88,13 @@ def print_cups(printer: str, tmp_path: str, job_id: str, timeout: int = 180):
         )
 
         if lp_result.returncode != 0:
-            raise Exception(f"Ошибка CUPS: {lp_result.stderr.strip()}")
+            error_msg = lp_result.stderr.strip()
+            if "paused" in error_msg.lower():
+                raise Exception("Принтер на паузе")
+            elif "rejecting" in error_msg.lower():
+                raise Exception("Принтер отклоняет задания")
+            else:
+                raise Exception(f"Ошибка CUPS: {error_msg}")
 
         # Извлекаем внутренний job_id CUPS
         match = re.search(r"request id is (\S+)", lp_result.stdout)
@@ -113,6 +132,10 @@ def check_printer_ready(printer: str, max_wait: int = 60):
 
             if not status["online"]:
                 logger.warning("Принтер не в сети")
+                return False
+
+            if status.get("paused", False):
+                logger.warning("Принтер на паузе")
                 return False
 
             if status["paper_out"]:
@@ -154,11 +177,12 @@ def print_file(task: dict):
     # Обновляем текущий job_id перед началом печати
     update_current_job_id(task)
 
-    # Базовый ответ
+    # Базовый ответ с обязательными полями для Laravel
     response = {
         "job_id": job_id,
-        "printer": printer,
-        "status": "success"
+        "printer": config.PRINTER_ID,  # Числовой ID принтера
+        "status": "success",
+        "error": None
     }
 
     if not content_b64:

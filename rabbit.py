@@ -45,8 +45,14 @@ def process_task(task):
         # Временные ошибки (повторяем)
         temporary_errors = [
             "недоступен", "timeout", "wait", "занят",
-            "очередь", "busy", "unavailable"
+            "очередь", "busy", "unavailable", "время",
+            "паузе", "paused", "paper", "бумаг", "door", "крышк", "toner", "тонер"
         ]
+
+        # Ошибка "Печать не завершилась в установленное время" - ВРЕМЕННАЯ ошибка
+        if "печать не завершилась" in error_msg.lower() or "время" in error_msg.lower():
+            logger.info("Таймаут печати - временная ошибка, повторяем позже")
+            return False
 
         if any(keyword in error_msg.lower() for keyword in temporary_errors):
             return False  # Временная ошибка - повторяем
@@ -92,7 +98,7 @@ def callback(ch, method, properties, body):
         ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
         return
 
-    max_retries = 5  # Уменьшено количество попыток
+    max_retries = 5
     retry_count = 0
 
     while retry_count <= max_retries:
@@ -112,36 +118,40 @@ def callback(ch, method, properties, body):
                 # Временная ошибка - повторяем после ожидания
                 retry_count += 1
                 if retry_count <= max_retries:
-                    logger.info(f"Повторная попытка {retry_count}/{max_retries} через 15 сек")
-                    if not wait_with_connection_check(15, connection):
+                    # Увеличиваем задержку с каждой попыткой (exponential backoff)
+                    delay = min(15 * (2 ** (retry_count - 1)), 300)  # max 5 минут
+                    logger.info(f"Повторная попытка {retry_count}/{max_retries} через {delay} сек")
+                    if not wait_with_connection_check(delay, connection):
                         logger.warning("Соединение разорвано во время ожидания")
                         return
                 else:
                     logger.warning(f"Превышено количество попыток для задачи {task.get('job_id')}")
-                    # Возвращаем задачу в очередь
+                    # ВОЗВРАЩАЕМ ЗАДАЧУ В ОЧЕРЕДЬ вместо подтверждения
                     ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
                     return
             else:
                 # Фатальная ошибка - подтверждаем и не повторяем
                 logger.error(f"Фатальная ошибка для задачи {task.get('job_id')}")
-                ch.basic_ack(delivery_tag=method.delivery_tag)
+                # ch.basic_ack(delivery_tag=method.delivery_tag) # повторяем
                 return
 
         except Exception as e:
             logger.error(f"Ошибка обработки задачи: {e}\n{traceback.format_exc()}")
             retry_count += 1
             if retry_count <= max_retries:
-                if not wait_with_connection_check(10, connection):
+                delay = min(15 * (2 ** (retry_count - 1)), 300)
+                if not wait_with_connection_check(delay, connection):
                     return
             else:
                 logger.error("Превышено количество попыток из-за исключений")
+                # ВОЗВРАЩАЕМ ЗАДАЧУ В ОЧЕРЕДЬ при исключениях
                 try:
                     ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
                 except:
                     logger.error("Не удалось отправить NACK - соединение разорвано")
                 return
 
-    # Если вышли из цикла - возвращаем в очередь
+    # Если вышли из цикла - ВОЗВРАЩАЕМ В ОЧЕРЕДЬ
     try:
         ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
     except:

@@ -18,7 +18,6 @@ except ImportError:
 
 logger: logging.Logger = None
 
-
 # Глобальная переменная для хранения текущего job_id
 current_job_id = None
 current_job_lock = threading.Lock()
@@ -38,7 +37,6 @@ def get_current_job_id():
     global current_job_id
     with current_job_lock:
         return current_job_id
-
 
 def setup_logger() -> logging.Logger:
     """Инициализация логгера"""
@@ -69,7 +67,6 @@ def setup_logger() -> logging.Logger:
 
     return logger
 
-
 def cleanup_file(path: str):
     """Удаление временного файла"""
     if path and os.path.exists(path) and os.path.isfile(path):
@@ -79,7 +76,6 @@ def cleanup_file(path: str):
         except Exception as e:
             logger.error(f"Не удалось удалить {path}: {e}")
 
-
 def graceful_exit(signum, frame):
     """Корректное завершение работы"""
     global logger
@@ -88,7 +84,6 @@ def graceful_exit(signum, frame):
     logger.info("Останавливаю worker...")
     sys.exit(0)
 
-
 def get_printer_status(printer: str) -> Dict[str, Any]:
     """Базовый статус принтера через lpstat"""
     status = {
@@ -96,6 +91,7 @@ def get_printer_status(printer: str) -> Dict[str, Any]:
         "paper_out": False,
         "toner_low": False,
         "door_open": False,
+        "paused": False,  # Добавлен статус паузы
         "raw_status": ""
     }
     try:
@@ -111,6 +107,8 @@ def get_printer_status(printer: str) -> Dict[str, Any]:
 
         if "disabled" in out_lower or "unknown" in out_lower:
             status["online"] = False
+        if "paused" in out_lower:
+            status["paused"] = True
         if any(err in out_lower for err in ["out of paper", "paper jam"]):
             status["paper_out"] = True
         if "toner" in out_lower and any(t in out_lower for t in ["low", "empty"]):
@@ -123,7 +121,6 @@ def get_printer_status(printer: str) -> Dict[str, Any]:
         status["raw_status"] = f"error: {e}"
 
     return status
-
 
 def get_detailed_printer_status(printer: str) -> Dict[str, Any]:
     """
@@ -138,9 +135,11 @@ def get_detailed_printer_status(printer: str) -> Dict[str, Any]:
         "paper_out": False,
         "toner_low": False,
         "door_open": False,
+        "paused": False,  # Добавлен статус паузы
         "jobs_in_queue": 0,
         "current_job_id": None,
-        "raw_status": ""
+        "raw_status": "",
+        "can_print": True  # Будет вычислено позже
     }
 
     commands = [
@@ -173,7 +172,8 @@ def get_detailed_printer_status(printer: str) -> Dict[str, Any]:
             "нет бумаги", "закончилась бумага", "загрузите бумагу"
         ],
         "toner_low": ["toner low", "low toner", "toner empty", "тонер низкий", "замените тонер"],
-        "door_open": ["door open", "cover open", "open cover", "дверца открыта", "крышка открыта"]
+        "door_open": ["door open", "cover open", "open cover", "дверца открыта", "крышка открыта"],
+        "paused": ["paused", "приостановлен", "на паузе"]  # Добавлены ключевые слова для паузы
     }
 
     # Поиск ошибок
@@ -181,7 +181,10 @@ def get_detailed_printer_status(printer: str) -> Dict[str, Any]:
         for p in patterns:
             check_output = full_output if any(e in p for e in ["media-empty-error", "media-needed-error"]) else full_output_lower
             if p in check_output:
-                status[key if key != "online" else "online"] = False if key == "online" else True
+                if key == "online":
+                    status["online"] = False
+                else:
+                    status[key] = True
                 break
 
     # Подсчет заданий в очереди
@@ -199,8 +202,13 @@ def get_detailed_printer_status(printer: str) -> Dict[str, Any]:
     if match:
         status["current_job_id"] = match.group(1)
 
-    # Проверка онлайн: если принтер оффлайн или есть ошибки, задачи не отправляем
-    status["can_print"] = status["online"] and not (status["paper_out"] or status["toner_low"] or status["door_open"])
+    # Проверка возможности печати: если принтер онлайн и нет ошибок
+    status["can_print"] = (
+        status["online"] and
+        not status["paused"] and  # Добавлена проверка паузы
+        not status["paper_out"] and
+        not status["toner_low"] and
+        not status["door_open"]
+    )
 
     return status
-
