@@ -13,6 +13,41 @@ from .utils import cleanup_file, get_detailed_printer_status, setup_logger, upda
 
 logger = setup_logger()
 
+def printer_exists(printer_name: str) -> bool:
+    """Проверяет, существует ли принтер в системе CUPS"""
+    try:
+        result = subprocess.run(
+            ["lpstat", "-p", printer_name],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+        return result.returncode == 0
+    except Exception as e:
+        logger.error(f"Ошибка при проверке существования принтера {printer_name}: {e}")
+        return False
+
+def get_available_printers():
+    """Получает список всех доступных принтеров"""
+    try:
+        result = subprocess.run(
+            ["lpstat", "-a"],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+        if result.returncode == 0:
+            printers = []
+            for line in result.stdout.splitlines():
+                if line.strip():
+                    printer_name = line.split()[0]
+                    printers.append(printer_name)
+            return printers
+        return []
+    except Exception as e:
+        logger.error(f"Ошибка при получении списка принтеров: {e}")
+        return []
+
 def print_raw(printer: str, tmp_path: str):
     cmd = ["nc", "-w1", printer, "9100"]
     with open(tmp_path, "rb") as f:
@@ -67,6 +102,14 @@ def print_cups(printer: str, tmp_path: str, job_id: str, timeout: int = 180):
     }
 
     try:
+        # Проверяем существование принтера
+        if not printer_exists(printer):
+            available_printers = get_available_printers()
+            raise Exception(
+                f"Принтер '{printer}' не найден в системе CUPS. "
+                f"Доступные принтеры: {', '.join(available_printers) if available_printers else 'не найдены'}"
+            )
+
         # Проверяем статус принтера перед отправкой
         printer_status = get_detailed_printer_status(printer)
 
@@ -84,12 +127,19 @@ def print_cups(printer: str, tmp_path: str, job_id: str, timeout: int = 180):
         lp_result = subprocess.run(
             ["lp", "-d", printer, "-o", "media=A4", tmp_path],
             capture_output=True,
-            text=True
+            text=True,
+            timeout=30
         )
 
         if lp_result.returncode != 0:
             error_msg = lp_result.stderr.strip()
-            if "paused" in error_msg.lower():
+            if "The printer or class does not exist" in error_msg:
+                available_printers = get_available_printers()
+                raise Exception(
+                    f"Принтер '{printer}' не существует. "
+                    f"Доступные принтеры: {', '.join(available_printers) if available_printers else 'не найдены'}"
+                )
+            elif "paused" in error_msg.lower():
                 raise Exception("Принтер на паузе")
             elif "rejecting" in error_msg.lower():
                 raise Exception("Принтер отклоняет задания")
@@ -111,6 +161,12 @@ def print_cups(printer: str, tmp_path: str, job_id: str, timeout: int = 180):
 
         return result
 
+    except subprocess.TimeoutExpired:
+        result.update({
+            "status": "error",
+            "error": "Таймаут отправки задания на печать"
+        })
+        return result
     except Exception as e:
         result.update({
             "status": "error",
@@ -125,6 +181,11 @@ def check_printer_ready(printer: str, max_wait: int = 60):
     """
     logger.info(f"🔍 Проверяем состояние принтера {printer}...")
     start_time = time.time()
+
+    # Сначала проверяем существование принтера
+    if not printer_exists(printer):
+        logger.error(f"❌ Принтер {printer} не существует в системе CUPS")
+        return False
 
     while time.time() - start_time < max_wait:
         try:
@@ -180,7 +241,7 @@ def print_file(task: dict):
     # Базовый ответ с обязательными полями для Laravel
     response = {
         "job_id": job_id,
-        "printer": config.PRINTER_ID,  # Числовой ID принтера
+        "printer": config.PRINTER_ID,
         "status": "success",
         "error": None
     }
@@ -199,6 +260,20 @@ def print_file(task: dict):
             return response
 
         logger.info(f"🖨️ Начинаем обработку задания {job_id}")
+
+        # Проверяем существование принтера
+        if not printer_exists(printer):
+            available_printers = get_available_printers()
+            error_msg = (
+                f"Принтер '{printer}' не найден в системе CUPS. "
+                f"Доступные принтеры: {', '.join(available_printers) if available_printers else 'не найдены'}"
+            )
+            logger.error(error_msg)
+            response.update({
+                "status": "error",
+                "error": error_msg
+            })
+            return response
 
         # Проверяем готовность принтера
         if not check_printer_ready(printer):
