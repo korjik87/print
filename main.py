@@ -73,7 +73,7 @@ class ScannerApp:
                 ["scanimage", "--device-name", scanner_device, "--help"],
                 capture_output=True,
                 text=True,
-                timeout=10
+                timeout=100
             )
 
             if result.returncode == 0:
