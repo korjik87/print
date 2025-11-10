@@ -16,9 +16,15 @@ DEFAULT_METHOD = os.getenv("DEFAULT_METHOD", "raw")
 PRINTER_ID = os.getenv("PRINTER_ID", "raw")
 PRINTER = os.getenv("DEFAULT_PRINTER", '192.168.50.131')
 DISABLE_PRINT = os.getenv("DISABLE_PRINT", "false").lower() == "true"
+DISABLE_SCAN = os.getenv("DISABLE_SCAN", "false").lower() == "true"   # Если True, сканирование отключается (для отладки)
 
 LOG_FILE = os.getenv("LOG_FILE", "/var/log/worker.log")
 LARAVEL_TOKEN = os.getenv("LARAVEL_TOKEN", "")
 
 HEARTBEAT_INTERVAL = 5
 
+
+# Настройки сканера
+SCANNER_FORMAT = "pdf"  # pdf или png
+SCANNER_DPI = 300
+SCANNER_MODE = "Color"  # Color, Gray, Lineart
