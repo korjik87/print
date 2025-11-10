@@ -26,6 +26,25 @@ class ScannerManager:
         self.keyboard_listener = None
         self.current_scan_callback = None
 
+    def find_scanner_by_criteria(self, criteria_type, criteria_value):
+        """Находит сканер по различным критериям"""
+        scanners = self.get_available_scanners()
+
+        for scanner in scanners:
+            if criteria_type == "id" and criteria_value in scanner:
+                return self.extract_scanner_id(scanner)
+            elif criteria_type == "name" and criteria_value in scanner:
+                return self.extract_scanner_id(scanner)
+            elif criteria_type == "ip" and criteria_value in scanner:
+                return self.extract_scanner_id(scanner)
+
+        return None
+
+    def extract_scanner_id(self, scanner_line):
+        """Извлекает ID сканера из строки"""
+        match = re.search(r"device `([^']+)'", scanner_line)
+        return match.group(1) if match else None
+
     def scanner_exists(self) -> bool:
         """Проверяет, доступен ли указанный в конфиге сканер"""
         try:
@@ -41,7 +60,26 @@ class ScannerManager:
 
             # Если в конфиге указан конкретный сканер, проверяем его наличие
             if hasattr(config, 'SCANNER_DEVICE') and config.SCANNER_DEVICE:
-                return config.SCANNER_DEVICE in result.stdout
+                # Пробуем разные способы поиска
+                scanners = result.stdout
+
+                # 1. Прямое совпадение по ID
+                if config.SCANNER_DEVICE in scanners:
+                    return True
+
+                # 2. Поиск по IP адресу
+                if "ip=" in config.SCANNER_DEVICE:
+                    ip_match = re.search(r"ip=([\d.]+)", config.SCANNER_DEVICE)
+                    if ip_match and ip_match.group(1) in scanners:
+                        return True
+
+                # 3. Поиск по имени устройства
+                if any(keyword in config.SCANNER_DEVICE.lower() for keyword in ['pantum', 'hp', 'xerox', 'kyocera']):
+                    for line in scanners.splitlines():
+                        if config.SCANNER_DEVICE.lower() in line.lower():
+                            return True
+
+                return False
             else:
                 # Иначе проверяем, что есть хотя бы один сканер
                 return bool(result.stdout.strip())
@@ -73,16 +111,66 @@ class ScannerManager:
     def get_scanner_device(self):
         """Возвращает устройство сканера для использования"""
         if hasattr(config, 'SCANNER_DEVICE') and config.SCANNER_DEVICE:
-            return config.SCANNER_DEVICE
+            # Пробуем найти сканер разными способами
+            scanners = self.get_available_scanners()
+
+            # Способ 1: Прямое совпадение
+            for scanner in scanners:
+                if config.SCANNER_DEVICE in scanner:
+                    device_id = self.extract_scanner_id(scanner)
+                    if device_id:
+                        logger.info(f"✅ Найден сканер по прямому совпадению: {device_id}")
+                        return device_id
+
+            # Способ 2: Поиск по IP адресу
+            if "127.0.0.1" in config.SCANNER_DEVICE or "localhost" in config.SCANNER_DEVICE:
+                for scanner in scanners:
+                    if "127.0.0.1" in scanner or "localhost" in scanner:
+                        device_id = self.extract_scanner_id(scanner)
+                        if device_id:
+                            logger.info(f"✅ Найден локальный сканер: {device_id}")
+                            return device_id
+
+            # Способ 3: Поиск по имени устройства
+            search_terms = []
+            if "Pantum" in config.SCANNER_DEVICE:
+                search_terms = ["Pantum M7100DW Series 9AF505 (USB)", "Pantum", "9AF505"]
+            elif "HP" in config.SCANNER_DEVICE:
+                search_terms = ["HP Neverstop", "0D605C"]
+            elif "Xerox" in config.SCANNER_DEVICE:
+                search_terms = ["Xerox"]
+            elif "Kyocera" in config.SCANNER_DEVICE:
+                search_terms = ["Kyocera"]
+
+            for term in search_terms:
+                for scanner in scanners:
+                    if term in scanner:
+                        device_id = self.extract_scanner_id(scanner)
+                        if device_id:
+                            logger.info(f"✅ Найден сканер по имени '{term}': {device_id}")
+                            return device_id
+
+            # Способ 4: Первый доступный сканер Pantum
+            for scanner in scanners:
+                if "Pantum" in scanner:
+                    device_id = self.extract_scanner_id(scanner)
+                    if device_id:
+                        logger.info(f"✅ Используем первый доступный Pantum: {device_id}")
+                        return device_id
+
+            # Способ 5: Первый доступный сканер
+            if scanners:
+                device_id = self.extract_scanner_id(scanners[0])
+                logger.info(f"✅ Используем первый доступный сканер: {device_id}")
+                return device_id
+
+            return None
         else:
             # Автоматически выбираем первый доступный сканер
             scanners = self.get_available_scanners()
             if scanners:
-                # Извлекаем ID сканера из строки (формат: 'device `pixma:04A91712_5A3F7F' is a CANON Canon LiDE 400')
-                scanner_line = scanners[0]
-                device_match = re.search(r"device `([^']+)'", scanner_line)
-                if device_match:
-                    return device_match.group(1)
+                device_id = self.extract_scanner_id(scanners[0])
+                return device_id
             return None
 
     def scan_document(self, format_type=None, dpi=None, mode=None) -> dict:
@@ -118,7 +206,7 @@ class ScannerManager:
                 available_scanners = self.get_available_scanners()
                 error_msg = (
                     f"Сканер не найден в системе. "
-                    f"Доступные сканеры: {', '.join(available_scanners) if available_scanners else 'не найдены'}"  # ИСПРАВЛЕНО: available_scanners
+                    f"Доступные сканеры: {', '.join(available_scanners) if available_scanners else 'не найдены'}"
                 )
                 logger.error(error_msg)
                 result.update({
@@ -137,6 +225,8 @@ class ScannerManager:
                     "error": error_msg
                 })
                 return result
+
+            logger.info(f"🎯 Используем сканер: {scanner_device}")
 
             # Создаем временный файл для сканирования
             file_extension = "pdf" if format_type.lower() == "pdf" else "png"

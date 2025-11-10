@@ -11,7 +11,7 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, current_dir)
 
 from scanner import scanner_manager
-import config  # ДОБАВЛЕН ИМПОРТ config
+import config
 
 class ScannerApp:
     def __init__(self):
@@ -55,6 +55,37 @@ class ScannerApp:
         print(f"\n🛑 Получен сигнал {sig}, останавливаемся...")
         self.stop()
     
+    def test_scanner_connection(self):
+        """Тестирует подключение к сканеру"""
+        print("\n🧪 Тестируем подключение к сканеру...")
+
+        scanner_device = scanner_manager.get_scanner_device()
+        if not scanner_device:
+            print("❌ Не удалось определить устройство сканера")
+            return False
+
+        print(f"📋 Определено устройство: {scanner_device}")
+
+        # Пробуем получить информацию о сканере
+        try:
+            result = subprocess.run(
+                ["scanimage", "--device-name", scanner_device, "--help"],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+
+            if result.returncode == 0:
+                print("✅ Сканер отвечает на запросы")
+                return True
+            else:
+                print(f"❌ Сканер не отвечает: {result.stderr}")
+                return False
+
+        except Exception as e:
+            print(f"❌ Ошибка тестирования сканера: {e}")
+            return False
+
     def detect_devices(self):
         """Обнаружение и вывод информации об устройствах"""
         print("🔍 Обнаружение устройств...")
@@ -73,8 +104,13 @@ class ScannerApp:
                     print(f"     ID: {device_id}")
 
                     # Проверяем, используется ли этот сканер в конфиге
-                    if hasattr(config, 'SCANNER_DEVICE') and config.SCANNER_DEVICE == device_id:
-                        print(f"     ✅ Используется в конфиге")
+                    if hasattr(config, 'SCANNER_DEVICE') and config.SCANNER_DEVICE:
+                        if config.SCANNER_DEVICE in scanner:
+                            print(f"     ✅ Совпадение с конфигом")
+                        elif "127.0.0.1" in config.SCANNER_DEVICE and "127.0.0.1" in scanner:
+                            print(f"     ✅ Совпадение по IP 127.0.0.1")
+                        elif config.SCANNER_DEVICE.lower() in scanner.lower():
+                            print(f"     ✅ Частичное совпадение с конфигом")
         else:
             print("  ❌ Сканеры не найдены")
             print("  💡 Установите SANE: sudo apt-get install sane sane-utils")
@@ -129,6 +165,11 @@ class ScannerApp:
         if scanner_manager.scanner_exists():
             scanner_device = scanner_manager.get_scanner_device()
             print(f"✅ Сканер доступен: {scanner_device}")
+
+            # Тестируем подключение
+            if not self.test_scanner_connection():
+                print("❌ Проблемы с подключением к сканеру")
+                return
         else:
             print("❌ Указанный сканер не найден")
             available_scanners = scanner_manager.get_available_scanners()
