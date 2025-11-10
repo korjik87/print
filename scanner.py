@@ -32,7 +32,7 @@ class ScannerManager:
                 ["scanimage", "-L"],
                 capture_output=True,
                 text=True,
-                timeout=10
+                timeout=100
             )
             return result.returncode == 0 and bool(result.stdout.strip())
         except Exception as e:
