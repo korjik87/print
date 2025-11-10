@@ -5,6 +5,7 @@ import time
 import json
 import signal
 import re
+import subprocess
 
 # Добавляем текущую директорию в путь Python
 current_dir = os.path.dirname(os.path.abspath(__file__))
