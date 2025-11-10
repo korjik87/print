@@ -237,7 +237,7 @@ class ScannerManager:
             scan_args = [
                 "scanimage",
                 f"--device-name={scanner_device}",
-                f"--format={format_type.upper()}" if format_type.lower() == "pdf" else "--format=png",
+                f"--format={format_type.lower()}" if format_type.lower() == "pdf" else "--format=png",
                 f"--resolution={dpi}",
                 f"--mode={mode}",
                 f"--output-file={tmp_path}"
