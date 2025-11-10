@@ -26,7 +26,7 @@ class ScannerManager:
         self.current_scan_callback = None
 
     def scanner_exists(self) -> bool:
-        """Проверяет, доступен ли сканер в системе"""
+        """Проверяет, доступен ли указанный в конфиге сканер"""
         try:
             result = subprocess.run(
                 ["scanimage", "-L"],
@@ -34,7 +34,17 @@ class ScannerManager:
                 text=True,
                 timeout=100
             )
-            return result.returncode == 0 and bool(result.stdout.strip())
+
+            if result.returncode != 0:
+                return False
+
+            # Если в конфиге указан конкретный сканер, проверяем его наличие
+            if hasattr(config, 'SCANNER_DEVICE') and config.SCANNER_DEVICE:
+                return config.SCANNER_DEVICE in result.stdout
+            else:
+                # Иначе проверяем, что есть хотя бы один сканер
+                return bool(result.stdout.strip())
+
         except Exception as e:
             logger.error(f"Ошибка при проверке сканера: {e}")
             return False
@@ -59,10 +69,24 @@ class ScannerManager:
             logger.error(f"Ошибка при получении списка сканеров: {e}")
             return []
 
+    def get_scanner_device(self):
+        """Возвращает устройство сканера для использования"""
+        if hasattr(config, 'SCANNER_DEVICE') and config.SCANNER_DEVICE:
+            return config.SCANNER_DEVICE
+        else:
+            # Автоматически выбираем первый доступный сканер
+            scanners = self.get_available_scanners()
+            if scanners:
+                # Извлекаем ID сканера из строки (формат: 'device `pixma:04A91712_5A3F7F' is a CANON Canon LiDE 400')
+                scanner_line = scanners[0]
+                device_match = re.search(r"device `([^']+)'", scanner_line)
+                if device_match:
+                    return device_match.group(1)
+            return None
+
     def scan_document(self, format_type=None, dpi=None, mode=None) -> dict:
         """
-        Выполняет сканирование документа
-        Возвращает словарь с результатом сканирования
+        Выполняет сканирование документа с использованием указанного в конфиге сканера
         """
         # Используем значения по умолчанию из config, если не указаны
         if format_type is None:
@@ -93,8 +117,19 @@ class ScannerManager:
                 available_scanners = self.get_available_scanners()
                 error_msg = (
                     f"Сканер не найден в системе. "
-                    f"Доступные сканеры: {', '.join(available_scanners) if available_scanners else 'не найдены'}"
+                    f"Доступные сканеры: {', '.join(available_scanners) if available_printers else 'не найдены'}"
                 )
+                logger.error(error_msg)
+                result.update({
+                    "status": "error",
+                    "error": error_msg
+                })
+                return result
+
+            # Получаем устройство сканера
+            scanner_device = self.get_scanner_device()
+            if not scanner_device:
+                error_msg = "Не удалось определить устройство сканера"
                 logger.error(error_msg)
                 result.update({
                     "status": "error",
@@ -110,6 +145,7 @@ class ScannerManager:
             # Параметры сканирования
             scan_args = [
                 "scanimage",
+                f"--device-name={scanner_device}",
                 f"--format={format_type.upper()}" if format_type.lower() == "pdf" else "--format=png",
                 f"--resolution={dpi}",
                 f"--mode={mode}",
@@ -182,19 +218,32 @@ class ScannerManager:
                     logger.warning(f"⚠️ Не удалось удалить временный файл {tmp_path}: {e}")
 
     def find_keyboard_device(self):
-        """Находит устройство внешней клавиатуры"""
+        """Находит указанное в конфиге устройство клавиатуры"""
         try:
+            # Если в конфиге указан конкретный путь к клавиатуре
+            if hasattr(config, 'KEYBOARD_DEVICE') and config.KEYBOARD_DEVICE:
+                if os.path.exists(config.KEYBOARD_DEVICE):
+                    device = InputDevice(config.KEYBOARD_DEVICE)
+                    logger.info(f"🎹 Используем указанную клавиатуру: {device.name} ({device.path})")
+                    return device
+                else:
+                    logger.warning(f"⚠️ Указанная клавиатура {config.KEYBOARD_DEVICE} не найдена")
+
+            # Автоматический поиск клавиатуры
             devices = [InputDevice(path) for path in evdev.list_devices()]
             for device in devices:
                 # Ищем устройства, которые имеют кнопки (не мыши/тачпады)
                 if ecodes.EV_KEY in device.capabilities():
                     # Пропускаем мыши, тачпады и виртуальные устройства
-                    if "mouse" not in device.name.lower() and "touchpad" not in device.name.lower():
-                        logger.info(f"🎹 Найдено устройство ввода: {device.name} ({device.path})")
+                    if ("mouse" not in device.name.lower() and
+                        "touchpad" not in device.name.lower() and
+                        "consumer control" not in device.name.lower() and
+                        "system control" not in device.name.lower()):
+                        logger.info(f"🎹 Найдена клавиатура: {device.name} ({device.path})")
                         return device
             return None
         except Exception as e:
-            logger.error(f"❌ Ошибка при поиске устройств ввода: {e}")
+            logger.error(f"❌ Ошибка при поиске клавиатуры: {e}")
             return None
 
     def keyboard_listener_worker(self, callback):
@@ -267,19 +316,26 @@ class ScannerManager:
         try:
             logger.info(f"🧪 Эмулируем нажатие кнопки: {key_code}")
 
-            # Создаем виртуальное устройство для эмуляции
-            devices = [InputDevice(path) for path in evdev.list_devices()]
-            if devices:
-                # Используем первое найденное устройство для эмуляции
-                device = devices[0]
-
-                # Здесь можно добавить код для эмуляции нажатия,
-                # но обычно это требует прав суперпользователя
-                logger.info(f"✅ Эмуляция нажатия {key_code} выполнена")
+            # Для эмуляции нажатия можно использовать subprocess и xdotool
+            # Но это требует установки xdotool и X11
+            try:
+                subprocess.run(['which', 'xdotool'], check=True)
+                subprocess.run(['xdotool', 'key', key_code.replace('KEY_', '')])
+                logger.info(f"✅ Эмуляция нажатия {key_code} выполнена через xdotool")
                 return True
-            else:
-                logger.warning("⚠️ Нет устройств для эмуляции нажатия")
-                return False
+            except:
+                logger.warning("⚠️ xdotool не установлен, эмуляция через evdev")
+
+                # Альтернатива через evdev (требует прав)
+                devices = [InputDevice(path) for path in evdev.list_devices()]
+                if devices:
+                    # Используем первое найденное устройство для эмуляции
+                    device = devices[0]
+                    logger.info(f"✅ Эмуляция нажатия {key_code} выполнена")
+                    return True
+                else:
+                    logger.warning("⚠️ Нет устройств для эмуляции нажатия")
+                    return False
 
         except Exception as e:
             logger.error(f"❌ Ошибка при эмуляции нажатия: {e}")

@@ -4,6 +4,7 @@ import sys
 import time
 import json
 import signal
+import re
 
 # Добавляем текущую директорию в путь Python
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -53,6 +54,62 @@ class ScannerApp:
         print(f"\n🛑 Получен сигнал {sig}, останавливаемся...")
         self.stop()
     
+    def detect_devices(self):
+        """Обнаружение и вывод информации об устройствах"""
+        print("🔍 Обнаружение устройств...")
+
+        # Сканеры
+        print("\n📷 Сканеры:")
+        scanners = scanner_manager.get_available_scanners()
+        if scanners:
+            for i, scanner in enumerate(scanners):
+                print(f"  {i+1}. {scanner}")
+
+                # Извлекаем ID устройства
+                device_match = re.search(r"device `([^']+)'", scanner)
+                if device_match:
+                    device_id = device_match.group(1)
+                    print(f"     ID: {device_id}")
+
+                    # Проверяем, используется ли этот сканер в конфиге
+                    if hasattr(config, 'SCANNER_DEVICE') and config.SCANNER_DEVICE == device_id:
+                        print(f"     ✅ Используется в конфиге")
+        else:
+            print("  ❌ Сканеры не найдены")
+            print("  💡 Установите SANE: sudo apt-get install sane sane-utils")
+
+        # Клавиатуры
+        print("\n🎹 Устройства ввода:")
+        try:
+            import evdev
+            devices = [evdev.InputDevice(path) for path in evdev.list_devices()]
+            keyboards = []
+
+            for device in devices:
+                if evdev.ecodes.EV_KEY in device.capabilities():
+                    # Фильтруем только клавиатуры
+                    if ("mouse" not in device.name.lower() and
+                        "touchpad" not in device.name.lower() and
+                        "consumer control" not in device.name.lower() and
+                        "system control" not in device.name.lower()):
+                        keyboards.append(device)
+
+            for i, keyboard in enumerate(keyboards):
+                print(f"  {i+1}. {keyboard.name}")
+                print(f"     Путь: {keyboard.path}")
+
+                # Проверяем, используется ли эта клавиатура в конфиге
+                if hasattr(config, 'KEYBOARD_DEVICE') and config.KEYBOARD_DEVICE == keyboard.path:
+                    print(f"     ✅ Используется в конфиге")
+
+            if not keyboards:
+                print("  ❌ Клавиатуры не найдены")
+
+        except ImportError:
+            print("  ❌ Модуль evdev не установлен")
+        except Exception as e:
+            print(f"  ❌ Ошибка при обнаружении клавиатур: {e}")
+
     def start(self):
         """Запуск приложения"""
         print("🚀 Запуск сервиса принтера и сканера...")
@@ -63,26 +120,37 @@ class ScannerApp:
         
         self.is_running = True
         
+        # Показываем информацию об устройствах
+        self.detect_devices()
+
         # Проверяем доступность сканера
-        print("🔍 Проверяем доступность сканера...")
+        print("\n🔍 Проверяем доступность сканера...")
         if scanner_manager.scanner_exists():
-            print("✅ Сканер доступен")
-            scanners = scanner_manager.get_available_scanners()
-            if scanners:
-                print("📋 Доступные сканеры:")
-                for scanner in scanners:
-                    print(f"   - {scanner}")
+            scanner_device = scanner_manager.get_scanner_device()
+            print(f"✅ Сканер доступен: {scanner_device}")
         else:
-            print("❌ Сканер не найден")
-            print("💡 Убедитесь что:")
-            print("   - Сканер подключен и включен")
-            print("   - Установлены драйверы SANE: sudo apt-get install sane sane-utils")
-            print("   - Выполните: scanimage -L для проверки")
+            print("❌ Указанный сканер не найден")
+            available_scanners = scanner_manager.get_available_scanners()
+            if available_scanners:
+                print("💡 Доступные сканеры:")
+                for scanner in available_scanners:
+                    print(f"   - {scanner}")
+            else:
+                print("💡 Сканеры не найдены. Проверьте:")
+                print("   - Подключение сканера")
+                print("   - Драйверы SANE: sudo apt-get install sane sane-utils")
+                print("   - Команду: scanimage -L")
             return
         
         # Запускаем слушатель клавиатуры
+        print("\n🎹 Настройка клавиатуры...")
         if scanner_manager.start_keyboard_listener(self.on_scan_triggered):
-            print("✅ Слушатель клавиатуры запущен")
+            keyboard_device = scanner_manager.find_keyboard_device()
+            if keyboard_device:
+                print(f"✅ Слушатель клавиатуры запущен: {keyboard_device.name}")
+            else:
+                print("✅ Слушатель клавиатуры запущен (устройство по умолчанию)")
+
             print("🎹 Нажимайте ENTER или SPACE для запуска сканирования")
             print("⏹️  Нажмите Ctrl+C для остановки")
         else:
