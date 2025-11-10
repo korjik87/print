@@ -11,6 +11,7 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, current_dir)
 
 from scanner import scanner_manager
+import config  # ДОБАВЛЕН ИМПОРТ config
 
 class ScannerApp:
     def __init__(self):

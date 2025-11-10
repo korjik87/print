@@ -7,6 +7,7 @@ import time
 import select
 import threading
 import logging
+import re
 
 try:
     import evdev
@@ -117,7 +118,7 @@ class ScannerManager:
                 available_scanners = self.get_available_scanners()
                 error_msg = (
                     f"Сканер не найден в системе. "
-                    f"Доступные сканеры: {', '.join(available_scanners) if available_printers else 'не найдены'}"
+                    f"Доступные сканеры: {', '.join(available_scanners) if available_scanners else 'не найдены'}"  # ИСПРАВЛЕНО: available_scanners
                 )
                 logger.error(error_msg)
                 result.update({
