@@ -26,25 +26,6 @@ class ScannerManager:
         self.keyboard_listener = None
         self.current_scan_callback = None
 
-    def find_scanner_by_criteria(self, criteria_type, criteria_value):
-        """Находит сканер по различным критериям"""
-        scanners = self.get_available_scanners()
-
-        for scanner in scanners:
-            if criteria_type == "id" and criteria_value in scanner:
-                return self.extract_scanner_id(scanner)
-            elif criteria_type == "name" and criteria_value in scanner:
-                return self.extract_scanner_id(scanner)
-            elif criteria_type == "ip" and criteria_value in scanner:
-                return self.extract_scanner_id(scanner)
-
-        return None
-
-    def extract_scanner_id(self, scanner_line):
-        """Извлекает ID сканера из строки"""
-        match = re.search(r"device `([^']+)'", scanner_line)
-        return match.group(1) if match else None
-
     def scanner_exists(self) -> bool:
         """Проверяет, доступен ли указанный в конфиге сканер"""
         try:
@@ -58,30 +39,9 @@ class ScannerManager:
             if result.returncode != 0:
                 return False
 
-            # Если в конфиге указан конкретный сканер, проверяем его наличие
             if hasattr(config, 'SCANNER_DEVICE') and config.SCANNER_DEVICE:
-                # Пробуем разные способы поиска
-                scanners = result.stdout
-
-                # 1. Прямое совпадение по ID
-                if config.SCANNER_DEVICE in scanners:
-                    return True
-
-                # 2. Поиск по IP адресу
-                if "ip=" in config.SCANNER_DEVICE:
-                    ip_match = re.search(r"ip=([\d.]+)", config.SCANNER_DEVICE)
-                    if ip_match and ip_match.group(1) in scanners:
-                        return True
-
-                # 3. Поиск по имени устройства
-                if any(keyword in config.SCANNER_DEVICE.lower() for keyword in ['pantum', 'hp', 'xerox', 'kyocera']):
-                    for line in scanners.splitlines():
-                        if config.SCANNER_DEVICE.lower() in line.lower():
-                            return True
-
-                return False
+                return config.SCANNER_DEVICE in result.stdout
             else:
-                # Иначе проверяем, что есть хотя бы один сканер
                 return bool(result.stdout.strip())
 
         except Exception as e:
@@ -111,73 +71,37 @@ class ScannerManager:
     def get_scanner_device(self):
         """Возвращает устройство сканера для использования"""
         if hasattr(config, 'SCANNER_DEVICE') and config.SCANNER_DEVICE:
-            # Пробуем найти сканер разными способами
             scanners = self.get_available_scanners()
 
-            # Способ 1: Прямое совпадение
+            # Ищем точное совпадение
             for scanner in scanners:
                 if config.SCANNER_DEVICE in scanner:
-                    device_id = self.extract_scanner_id(scanner)
-                    if device_id:
-                        logger.info(f"✅ Найден сканер по прямому совпадению: {device_id}")
+                    device_match = re.search(r"device `([^']+)'", scanner)
+                    if device_match:
+                        device_id = device_match.group(1)
+                        logger.info(f"✅ Найден сканер: {device_id}")
                         return device_id
 
-            # Способ 2: Поиск по IP адресу
-            if "127.0.0.1" in config.SCANNER_DEVICE or "localhost" in config.SCANNER_DEVICE:
-                for scanner in scanners:
-                    if "127.0.0.1" in scanner or "localhost" in scanner:
-                        device_id = self.extract_scanner_id(scanner)
-                        if device_id:
-                            logger.info(f"✅ Найден локальный сканер: {device_id}")
-                            return device_id
-
-            # Способ 3: Поиск по имени устройства
-            search_terms = []
-            if "Pantum" in config.SCANNER_DEVICE:
-                search_terms = ["Pantum M7100DW Series 9AF505 (USB)", "Pantum", "9AF505"]
-            elif "HP" in config.SCANNER_DEVICE:
-                search_terms = ["HP Neverstop", "0D605C"]
-            elif "Xerox" in config.SCANNER_DEVICE:
-                search_terms = ["Xerox"]
-            elif "Kyocera" in config.SCANNER_DEVICE:
-                search_terms = ["Kyocera"]
-
-            for term in search_terms:
-                for scanner in scanners:
-                    if term in scanner:
-                        device_id = self.extract_scanner_id(scanner)
-                        if device_id:
-                            logger.info(f"✅ Найден сканер по имени '{term}': {device_id}")
-                            return device_id
-
-            # Способ 4: Первый доступный сканер Pantum
-            for scanner in scanners:
-                if "Pantum" in scanner:
-                    device_id = self.extract_scanner_id(scanner)
-                    if device_id:
-                        logger.info(f"✅ Используем первый доступный Pantum: {device_id}")
-                        return device_id
-
-            # Способ 5: Первый доступный сканер
+            # Если точного совпадения нет, используем первый доступный
             if scanners:
-                device_id = self.extract_scanner_id(scanners[0])
-                logger.info(f"✅ Используем первый доступный сканер: {device_id}")
-                return device_id
+                device_match = re.search(r"device `([^']+)'", scanners[0])
+                if device_match:
+                    device_id = device_match.group(1)
+                    logger.info(f"✅ Используем первый доступный сканер: {device_id}")
+                    return device_id
 
             return None
         else:
-            # Автоматически выбираем первый доступный сканер
             scanners = self.get_available_scanners()
             if scanners:
-                device_id = self.extract_scanner_id(scanners[0])
-                return device_id
+                device_match = re.search(r"device `([^']+)'", scanners[0])
+                return device_match.group(1) if device_match else None
             return None
 
     def scan_document(self, format_type=None, dpi=None, mode=None) -> dict:
         """
-        Выполняет сканирование документа с использованием указанного в конфиге сканера
+        Выполняет сканирование документа
         """
-        # Используем значения по умолчанию из config, если не указаны
         if format_type is None:
             format_type = config.SCANNER_FORMAT
         if dpi is None:
@@ -309,36 +233,45 @@ class ScannerManager:
                     logger.warning(f"⚠️ Не удалось удалить временный файл {tmp_path}: {e}")
 
     def find_keyboard_device(self):
-        """Находит указанное в конфиге устройство клавиатуры"""
+        """Находит устройство ввода указанное в конфиге"""
         try:
             # Если в конфиге указан конкретный путь к клавиатуре
             if hasattr(config, 'KEYBOARD_DEVICE') and config.KEYBOARD_DEVICE:
                 if os.path.exists(config.KEYBOARD_DEVICE):
                     device = InputDevice(config.KEYBOARD_DEVICE)
-                    logger.info(f"🎹 Используем указанную клавиатуру: {device.name} ({device.path})")
+                    logger.info(f"🎹 Используем устройство: {device.name} ({device.path})")
+
+                    # Проверяем доступные кнопки
+                    caps = device.capabilities()
+                    if ecodes.EV_KEY in caps:
+                        keys = caps[ecodes.EV_KEY]
+                        available_trigger_keys = []
+                        for key_name in getattr(config, 'SCAN_TRIGGER_KEYS', []):
+                            key_code = getattr(ecodes, key_name, None)
+                            if key_code and key_code in keys:
+                                available_trigger_keys.append(key_name)
+
+                        if available_trigger_keys:
+                            logger.info(f"🎯 Доступные кнопки для сканирования: {', '.join(available_trigger_keys)}")
+                        else:
+                            logger.warning(f"⚠️ На устройстве нет настроенных кнопок для сканирования")
+
                     return device
                 else:
-                    logger.warning(f"⚠️ Указанная клавиатура {config.KEYBOARD_DEVICE} не найдена")
-
-            # Автоматический поиск клавиатуры
-            devices = [InputDevice(path) for path in evdev.list_devices()]
-            for device in devices:
-                # Ищем устройства, которые имеют кнопки (не мыши/тачпады)
-                if ecodes.EV_KEY in device.capabilities():
-                    # Пропускаем мыши, тачпады и виртуальные устройства
-                    if ("mouse" not in device.name.lower() and
-                        "touchpad" not in device.name.lower() and
-                        "consumer control" not in device.name.lower() and
-                        "system control" not in device.name.lower()):
-                        logger.info(f"🎹 Найдена клавиатура: {device.name} ({device.path})")
-                        return device
+                    logger.warning(f"⚠️ Устройство {config.KEYBOARD_DEVICE} не найдено")
             return None
         except Exception as e:
-            logger.error(f"❌ Ошибка при поиске клавиатуры: {e}")
+            logger.error(f"❌ Ошибка при поиске устройства: {e}")
             return None
 
+    def is_trigger_key(self, key_event):
+        """Проверяет, является ли нажатая кнопка триггером для сканирования"""
+        key_name = key_event.keycode
+        trigger_keys = getattr(config, 'SCAN_TRIGGER_KEYS', ['KEY_POWER'])
+        return key_name in trigger_keys
+
     def keyboard_listener_worker(self, callback):
-        """Рабочий процесс для прослушивания нажатий клавиш"""
+        """Рабочий процесс для прослушивания нажатий кнопок"""
         device = None
 
         while self.scanning:
@@ -346,13 +279,13 @@ class ScannerManager:
                 if device is None:
                     device = self.find_keyboard_device()
                     if device is None:
-                        logger.warning("⚠️ Клавиатура не найдена, повторная попытка через 5 секунд...")
+                        logger.warning("⚠️ Устройство ввода не найдено, повторная попытка через 5 секунд...")
                         time.sleep(5)
                         continue
 
-                    logger.info(f"🎹 Слушаем устройство: {device.name}")
+                    logger.info(f"🎹 Начинаем отслеживание устройства: {device.name}")
 
-                # Читаем события с таймаутом
+                # Читаем события с устройства
                 for event in device.read_loop():
                     if not self.scanning:
                         break
@@ -360,26 +293,22 @@ class ScannerManager:
                     if event.type == ecodes.EV_KEY:
                         key_event = categorize(event)
                         if key_event.keystate == key_event.key_down:  # Только при нажатии
-                            if key_event.keycode == 'KEY_ENTER':
-                                logger.info("🔘 Нажата кнопка ENTER, запускаем сканирование...")
+                            if self.is_trigger_key(key_event):
+                                logger.info(f"🔘 Нажата кнопка {key_event.keycode}, запускаем сканирование...")
                                 callback()
-                            elif key_event.keycode == 'KEY_SPACE':
-                                logger.info("🔘 Нажата кнопка SPACE, запускаем сканирование...")
-                                callback()
-                            # Можно добавить другие кнопки по необходимости
 
             except Exception as e:
-                logger.error(f"❌ Ошибка в слушателе клавиатуры: {e}")
+                logger.error(f"❌ Ошибка в слушателе устройства: {e}")
                 device = None
                 time.sleep(2)
 
     def start_keyboard_listener(self, scan_callback):
-        """Запускает прослушивание нажатий клавиш"""
+        """Запускает прослушивание нажатий кнопок"""
         if self.scanning:
-            logger.warning("⚠️ Слушатель клавиатуры уже запущен")
+            logger.warning("⚠️ Слушатель уже запущен")
             return False
 
-        logger.info("🎹 Запускаем слушатель клавиатуры...")
+        logger.info("🎹 Запускаем слушатель устройства ввода...")
         self.scanning = True
         self.current_scan_callback = scan_callback
 
@@ -389,18 +318,18 @@ class ScannerManager:
             daemon=True
         )
         self.keyboard_listener.start()
-        logger.info("✅ Слушатель клавиатуры запущен")
+        logger.info("✅ Слушатель устройства запущен")
         return True
 
     def stop_keyboard_listener(self):
-        """Останавливает прослушивание нажатий клавиш"""
-        logger.info("🛑 Останавливаем слушатель клавиатуры...")
+        """Останавливает прослушивание нажатий кнопок"""
+        logger.info("🛑 Останавливаем слушатель устройства...")
         self.scanning = False
         self.current_scan_callback = None
 
         if self.keyboard_listener and self.keyboard_listener.is_alive():
             self.keyboard_listener.join(timeout=5)
-        logger.info("✅ Слушатель клавиатуры остановлен")
+        logger.info("✅ Слушатель устройства остановлен")
 
     def simulate_key_press(self, key_code='KEY_ENTER'):
         """Эмулирует нажатие кнопки для тестирования"""

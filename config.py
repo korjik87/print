@@ -23,7 +23,6 @@ LARAVEL_TOKEN = os.getenv("LARAVEL_TOKEN", "")
 
 HEARTBEAT_INTERVAL = 5
 
-
 # Настройки сканера
 SCANNER_FORMAT = "pdf"  # pdf или png
 SCANNER_DPI = 300
@@ -33,10 +32,28 @@ SCANNER_MODE = "Color"  # Color, Gray, Lineart
 # SCANNER_DEVICE = os.getenv("DEFAULT_SCANNER", '192.168.1.163') # Замените на ID вашего сканера из scanimage -L
 # SCANNER_DEVICE = os.getenv("DEFAULT_SCANNER", 'Pantum_M7100DW_Series_9AF505_USB') # Замените на ID вашего сканера из scanimage -L
 SCANNER_DEVICE = os.getenv("DEFAULT_SCANNER", 'airscan:e5:Pantum M7100DW Series 9AF505 (USB)') # Замените на ID вашего сканера из scanimage -L
-KEYBOARD_DEVICE =  os.getenv("DEFAULT_KEYBOARD", "/dev/input/event2")       # SIGMACH1P USB Keyboard из вашего списка
+KEYBOARD_DEVICE =  os.getenv("DEFAULT_KEYBOARD", "/dev/input/event0")       # SIGMACH1P USB Keyboard из вашего списка
 
-SCAN_UPLOAD_ENDPOINT="/api/v1/scans/upload"
+# Дополнительные устройства с кнопками (например, кнопка питания)
+ADDITIONAL_INPUT_DEVICES = [
+    "/dev/input/event0",  # axp20x-pek (KEY_POWER)
+]
 
-# Альтернативно, можно использовать автоматическое определение
-AUTO_DETECT_SCANNER = False  # Если True, будет использован первый найденный сканер
-AUTO_DETECT_KEYBOARD = False # Если True, будет использована первая найденная клавиатура
+# Кнопки для запуска сканирования
+SCAN_TRIGGER_KEYS = [
+    'KEY_ENTER',      # Enter на основной клавиатуре
+    'KEY_SPACE',      # Пробел на основной клавиатуре
+    'KEY_POWER',      # Кнопка питания на axp20x-pek
+    'KEY_VOLUMEUP',   # Кнопка увеличения громкости (если есть)
+    'KEY_VOLUMEDOWN', # Кнопка уменьшения громкости (если есть)
+    'EV_SYN',
+    'EV_KEY',
+    '0',
+    '1',
+    '116'
+]
+
+# Автоопределение устройств
+AUTO_DETECT_SCANNER = False
+AUTO_DETECT_KEYBOARD = False
+AUTO_DETECT_BUTTONS = True  # Автоматически искать устройства с кнопками
