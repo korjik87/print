@@ -34,6 +34,8 @@ SCANNER_MODE = "Color"  # Color, Gray, Lineart
 SCANNER_DEVICE = os.getenv("DEFAULT_SCANNER", 'airscan:e5:Pantum M7100DW Series 9AF505 (USB)') # Замените на ID вашего сканера из scanimage -L
 KEYBOARD_DEVICE =  os.getenv("DEFAULT_KEYBOARD", "/dev/input/event0")       # SIGMACH1P USB Keyboard из вашего списка
 
+SCAN_UPLOAD_ENDPOINT="/api/v1/scans/upload"
+
 # Дополнительные устройства с кнопками (например, кнопка питания)
 ADDITIONAL_INPUT_DEVICES = [
     "/dev/input/event0",  # axp20x-pek (KEY_POWER)
