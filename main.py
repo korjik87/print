@@ -13,6 +13,7 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, current_dir)
 
 from scanner import scanner_manager
+from scan_uploader import scan_uploader
 import config
 
 class ScannerApp:
@@ -32,26 +33,54 @@ class ScannerApp:
             print(f"📁 Файл: {scan_result['filename']}")
             print(f"📊 Размер данных: {len(scan_result['content'])} символов base64")
             
-            # Здесь можно отправить результат на сервер, сохранить в БД и т.д.
-            self.handle_scan_result(scan_result)
+            # Отправляем скан в админку
+            upload_result = self.upload_scan_to_server(scan_result)
+
+            # Обрабатываем результат
+            self.handle_scan_result(scan_result, upload_result)
         else:
             print(f"❌ Ошибка сканирования: {scan_result['error']}")
     
-    def handle_scan_result(self, scan_result):
-        """Обработка результатов сканирования"""
-        # Пример: сохранение метаданных в файл
+    def upload_scan_to_server(self, scan_result):
+        """Отправляет скан на сервер Laravel"""
+        print("📤 Отправка скана в админку...")
+        return scan_uploader.upload_scan(scan_result)
+
+    def handle_scan_result(self, scan_result, upload_result):
+        """Обработка результатов сканирования и отправки"""
+        # Сохраняем полные метаданные
         output_data = {
             'scan_id': scan_result['scan_id'],
             'timestamp': time.time(),
             'filename': scan_result['filename'],
             'content_length': len(scan_result['content']),
-            'status': scan_result['status']
+            'scan_status': scan_result['status'],
+            'upload_status': upload_result['upload_status'],
+            'upload_error': upload_result['error'],
+            'response_data': upload_result.get('response_data')
         }
         
-        with open(f"scan_{scan_result['scan_id']}.json", 'w') as f:
+        # Сохраняем метаданные в файл
+        metadata_file = f"scan_{scan_result['scan_id']}.json"
+        with open(metadata_file, 'w') as f:
             json.dump(output_data, f, indent=2)
         
-        print(f"💾 Метаданные сканирования сохранены в scan_{scan_result['scan_id']}.json")
+        print(f"💾 Метаданные сохранены в {metadata_file}")
+
+        # Выводим результат отправки
+        if upload_result['upload_status'] == 'success':
+            print("✅ Скан успешно отправлен в админку")
+            if upload_result.get('response_data'):
+                print(f"📋 Ответ сервера: {upload_result['response_data']}")
+        else:
+            print(f"❌ Ошибка отправки: {upload_result['error']}")
+
+            # Сохраняем скан локально для последующей отправки
+            if scan_result.get('content'):
+                backup_file = f"scan_backup_{scan_result['scan_id']}.{'pdf' if scan_result['filename'].endswith('.pdf') else 'png'}"
+                with open(backup_file, 'w') as f:
+                    f.write(scan_result['content'])
+                print(f"💾 Скан сохранен локально в {backup_file} для последующей отправки")
     
     def signal_handler(self, sig, frame):
         """Обработчик сигналов для graceful shutdown"""
@@ -62,6 +91,28 @@ class ScannerApp:
         """Эмулирует нажатие кнопки сканирования"""
         print("🧪 Эмулируем нажатие кнопки сканирования...")
         self.on_scan_triggered()
+
+    def test_api_connection(self):
+        """Тестирует подключение к API"""
+        print("\n🔌 Тестируем подключение к Laravel API...")
+
+        if not config.LARAVEL_TOKEN:
+            print("❌ LARAVEL_TOKEN не установлен в конфигурации")
+            return False
+
+        if not config.LARAVEL_API or config.LARAVEL_API == "http://localhost":
+            print("❌ LARAVEL_API не настроен правильно")
+            return False
+
+        print(f"🌐 API: {config.LARAVEL_API}")
+        print(f"🔑 Токен: {config.LARAVEL_TOKEN[:10]}...")  # Показываем только начало токена
+
+        if scan_uploader.test_connection():
+            print("✅ Подключение к API успешно")
+            return True
+        else:
+            print("❌ Не удалось подключиться к API")
+            return False
 
     def test_scanner_connection(self):
         """Тестирует подключение к сканеру"""
@@ -163,24 +214,27 @@ class ScannerApp:
             print("="*50)
             print("1. 🧪 Эмуляция нажатия кнопки (запуск сканирования)")
             print("2. 🔍 Проверить доступность сканера")
-            print("3. 🎹 Проверить клавиатуру")
-            print("4. 🚀 Запуск службы сканирования (ожидание кнопки)")
-            print("5. 🛑 Выход")
+            print("3. 🌐 Проверить подключение к API")
+            print("4. 🎹 Проверить клавиатуру")
+            print("5. 🚀 Запуск службы сканирования (ожидание кнопки)")
+            print("6. 🛑 Выход")
             print("="*50)
 
-            choice = input("Выберите действие (1-5): ").strip()
+            choice = input("Выберите действие (1-6): ").strip()
 
             if choice == "1":
                 self.simulate_scan_trigger()
             elif choice == "2":
                 self.test_scanner_manual()
             elif choice == "3":
-                self.test_keyboard_manual()
+                self.test_api_connection()
             elif choice == "4":
+                self.test_keyboard_manual()
+            elif choice == "5":
                 print("🚀 Запускаем службу сканирования...")
                 self.start_service()
                 break
-            elif choice == "5":
+            elif choice == "6":
                 print("👋 Выход...")
                 break
             else:
@@ -249,37 +303,23 @@ class ScannerApp:
         """Запуск службы сканирования"""
         print("🚀 Запуск сервиса сканирования...")
         
+        # Проверяем подключение к API
+        if not self.test_api_connection():
+            print("❌ Не удалось подключиться к API. Продолжаем без отправки сканов.")
+
         # Регистрируем обработчики сигналов
         signal.signal(signal.SIGINT, self.signal_handler)
         signal.signal(signal.SIGTERM, self.signal_handler)
         
         self.is_running = True
-        
-        # Показываем информацию об устройствах
-        self.detect_devices()
 
         # Проверяем доступность сканера
         print("\n🔍 Проверяем доступность сканера...")
         if scanner_manager.scanner_exists():
             scanner_device = scanner_manager.get_scanner_device()
             print(f"✅ Сканер доступен: {scanner_device}")
-
-            # Тестируем подключение
-            if not self.test_scanner_connection():
-                print("❌ Проблемы с подключением к сканеру")
-                return
         else:
             print("❌ Указанный сканер не найден")
-            available_scanners = scanner_manager.get_available_scanners()
-            if available_scanners:
-                print("💡 Доступные сканеры:")
-                for scanner in available_scanners:
-                    print(f"   - {scanner}")
-            else:
-                print("💡 Сканеры не найдены. Проверьте:")
-                print("   - Подключение сканера")
-                print("   - Драйверы SANE: sudo apt-get install sane sane-utils")
-                print("   - Команду: scanimage -L")
             return
         
         # Запускаем слушатель клавиатуры
