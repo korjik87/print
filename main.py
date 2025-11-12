@@ -59,12 +59,12 @@ class ScannerApp:
             'upload_error': upload_result['error'],
             'response_data': upload_result.get('response_data')
         }
-        
+
         # Сохраняем метаданные в файл
         metadata_file = f"scan_{scan_result['scan_id']}.json"
         with open(metadata_file, 'w') as f:
             json.dump(output_data, f, indent=2)
-        
+
         print(f"💾 Метаданные сохранены в {metadata_file}")
 
         # Выводим результат отправки
