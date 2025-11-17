@@ -264,43 +264,64 @@ class ScannerManager:
             logger.error(f"❌ Ошибка при поиске устройства: {e}")
             return None
 
-    def is_trigger_key(self, key_event):
-        """Проверяет, является ли нажатая кнопка триггером для сканирования"""
-        key_name = key_event.keycode
-        trigger_keys = getattr(config, 'SCAN_TRIGGER_KEYS', ['KEY_POWER'])
-        return key_name in trigger_keys
+def is_trigger_key(self, key_event):
+    """Проверяет, является ли нажатая кнопка триггером для сканирования"""
+    key_name = key_event.keycode
 
-    def keyboard_listener_worker(self, callback):
-        """Рабочий процесс для прослушивания нажатий кнопок"""
-        device = None
+    # Получаем список триггерных кнопок из конфига
+    trigger_keys = getattr(config, 'SCAN_TRIGGER_KEYS', [
+        'KEY_ENTER',
+        'KEY_SPACE',
+        'KEY_POWER',
+        'KEY_1'  # Добавляем по умолчанию на всякий случай
+    ])
 
-        while self.scanning:
-            try:
+    logger.debug(f"🔍 Проверка кнопки {key_name} в списке: {trigger_keys}")
+
+    is_trigger = key_name in trigger_keys
+    logger.debug(f"🔍 Результат проверки: {is_trigger}")
+
+    return is_trigger
+
+def keyboard_listener_worker(self, callback):
+    """Рабочий процесс для прослушивания нажатий кнопок"""
+    device = None
+
+    while self.scanning:
+        try:
+            if device is None:
+                device = self.find_keyboard_device()
                 if device is None:
-                    device = self.find_keyboard_device()
-                    if device is None:
-                        logger.warning("⚠️ Устройство ввода не найдено, повторная попытка через 5 секунд...")
-                        time.sleep(5)
-                        continue
+                    logger.warning("⚠️ Устройство ввода не найдено, повторная попытка через 5 секунд...")
+                    time.sleep(5)
+                    continue
 
-                    logger.info(f"🎹 Начинаем отслеживание устройства: {device.name}")
+                logger.info(f"🎹 Начинаем отслеживание устройства: {device.name}")
 
-                # Читаем события с устройства
-                for event in device.read_loop():
-                    if not self.scanning:
-                        break
+            # Читаем события с устройства
+            for event in device.read_loop():
+                if not self.scanning:
+                    break
 
-                    if event.type == ecodes.EV_KEY:
-                        key_event = categorize(event)
-                        if key_event.keystate == key_event.key_down:  # Только при нажатии
-                            if self.is_trigger_key(key_event):
-                                logger.info(f"🔘 Нажата кнопка {key_event.keycode}, запускаем сканирование...")
-                                callback()
+                if event.type == ecodes.EV_KEY:
+                    key_event = categorize(event)
 
-            except Exception as e:
-                logger.error(f"❌ Ошибка в слушателе устройства: {e}")
-                device = None
-                time.sleep(2)
+                    # ОТЛАДОЧНЫЙ ВЫВОД: логируем все события клавиш
+                    logger.debug(f"🔍 Событие клавиши: {key_event.keycode} (код: {event.code}, состояние: {key_event.keystate})")
+
+                    if key_event.keystate == key_event.key_down:  # Только при нажатии
+                        logger.info(f"🔘 Нажата кнопка: {key_event.keycode}")
+
+                        if self.is_trigger_key(key_event):
+                            logger.info(f"🎯 ТРИГГЕР! Кнопка {key_event.keycode} в списке триггеров, запускаем сканирование...")
+                            callback()
+                        else:
+                            logger.info(f"❌ Кнопка {key_event.keycode} не в списке триггеров")
+
+        except Exception as e:
+            logger.error(f"❌ Ошибка в слушателе устройства: {e}")
+            device = None
+            time.sleep(2)
 
     def start_keyboard_listener(self, scan_callback):
         """Запускает прослушивание нажатий кнопок"""
