@@ -12,9 +12,27 @@ import subprocess
 current_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, current_dir)
 
+# Импортируем наши модули
 from scanner import scanner_manager
 from scan_uploader import scan_uploader
 import config
+
+# Глобальные переменные для evdev (будут установлены при необходимости)
+ecodes = None
+categorize = None
+InputDevice = None
+
+def setup_evdev():
+    """Настраивает evdev модуль если доступен"""
+    global ecodes, categorize, InputDevice
+    try:
+        from evdev import ecodes, InputDevice, categorize
+        return True
+    except ImportError:
+        print("⚠️  Модуль evdev не установлен. Установите: pip install evdev")
+        return False
+
+
 
 class ScannerApp:
     def __init__(self):
@@ -131,7 +149,7 @@ class ScannerApp:
                 ["scanimage", "--device-name", scanner_device, "--help"],
                 capture_output=True,
                 text=True,
-                timeout=100
+                timeout=50
             )
 
             if result.returncode == 0:
@@ -274,6 +292,11 @@ class ScannerApp:
         """Ручное тестирование клавиатуры"""
         print("\n🎹 Ручное тестирование клавиатуры...")
 
+        # Настраиваем evdev
+        if not setup_evdev():
+            print("❌ Модуль evdev не установлен. Установите: pip install evdev")
+            return
+
         keyboard_device = scanner_manager.find_keyboard_device()
         if keyboard_device:
             print(f"✅ Клавиатура найдена: {keyboard_device.name}")
@@ -282,20 +305,21 @@ class ScannerApp:
             # Тестируем чтение событий в реальном времени
             print("\n🎯 Тестируем события клавиатуры...")
             print("   Нажмите любую клавишу на клавиатуре (для выхода нажмите ESC)")
+            print("   Или нажмите Ctrl+C для выхода")
 
             try:
                 for event in keyboard_device.read_loop():
-                    if event.type == evdev.ecodes.EV_KEY:
-                        key_event = evdev.categorize(event)
+                    if event.type == ecodes.EV_KEY:
+                        key_event = categorize(event)
                         if key_event.keystate == key_event.key_down:
-                            print(f"   🔘 Нажата кнопка: {key_event.keycode}")
+                            print(f"   🔘 Нажата кнопка: {key_event.keycode} (код: {event.code})")
 
                             # Выход по ESC
                             if key_event.keycode == 'KEY_ESC':
                                 print("   🛑 Выход из теста клавиатуры")
                                 break
             except KeyboardInterrupt:
-                print("   🛑 Прервано пользователем")
+                print("\n   🛑 Прервано пользователем")
         else:
             print("❌ Клавиатура не найдена")
 

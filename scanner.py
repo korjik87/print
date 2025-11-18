@@ -33,7 +33,7 @@ class ScannerManager:
                 ["scanimage", "-L"],
                 capture_output=True,
                 text=True,
-                timeout=100
+                timeout=50
             )
 
             if result.returncode != 0:
@@ -55,7 +55,7 @@ class ScannerManager:
                 ["scanimage", "-L"],
                 capture_output=True,
                 text=True,
-                timeout=100
+                timeout=50
             )
             if result.returncode == 0:
                 scanners = []
