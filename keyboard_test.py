@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import os
 import sys
+import config
 
 # Добавляем текущую директорию в путь Python
 current_dir = os.path.dirname(os.path.abspath(__file__))
