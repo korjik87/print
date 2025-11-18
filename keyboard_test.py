@@ -48,22 +48,22 @@ def test_keyboard():
         try:
             for event in keyboard_device.read_loop():
                 # ФИЛЬТРУЕМ ТОЛЬКО СОБЫТИЯ КЛАВИШ
-                if event.type == ecodes.EV_KEY:
-                    try:
-                        key_event = categorize(event)
+#                 if event.type == ecodes.EV_KEY:
+                try:
+                    key_event = categorize(event)
 
-                        # Проверяем состояние клавиши (0=отпущена, 1=нажата, 2=удерживается)
-                        if event.value == 1:  # Клавиша нажата
-                            key_name = key_event.keycode if hasattr(key_event, 'keycode') else f'UNKNOWN_{event.code}'
-                            print(f"   🔘 Нажата кнопка: {key_name} (код: {event.code})")
+                    # Проверяем состояние клавиши (0=отпущена, 1=нажата, 2=удерживается)
+                    if event.value == 1:  # Клавиша нажата
+                        key_name = key_event.keycode if hasattr(key_event, 'keycode') else f'UNKNOWN_{event.code}'
+                        print(f"   🔘 Нажата кнопка: {key_name} (код: {event.code})")
 
-                            # Выход по ESC
-                            if key_name == 'KEY_ESC':
-                                print("   🛑 Выход из теста клавиатуры")
-                                break
+                        # Выход по ESC
+                        if key_name == 'KEY_ESC':
+                            print("   🛑 Выход из теста клавиатуры")
+                            break
 
-                    except Exception as e:
-                        print(f"   ⚠️ Ошибка обработки события: {e}")
+                except Exception as e:
+                    print(f"   ⚠️ Ошибка обработки события: {e}")
 
         except KeyboardInterrupt:
             print("\n   🛑 Прервано пользователем")
