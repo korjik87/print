@@ -57,3 +57,6 @@ SCAN_TRIGGER_KEYS = [
 AUTO_DETECT_SCANNER = False
 AUTO_DETECT_KEYBOARD = False
 AUTO_DETECT_BUTTONS = True  # Автоматически искать устройства с кнопками
+
+# Опции автоподатчика (найденные через тестирование)
+SCANNER_ADF_OPTIONS = ["--source=ADF", "--batch"]

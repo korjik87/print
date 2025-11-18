@@ -32,8 +32,6 @@ def setup_evdev():
         print("⚠️  Модуль evdev не установлен. Установите: pip install evdev")
         return False
 
-
-
 class ScannerApp:
     def __init__(self):
         self.is_running = False
@@ -154,6 +152,12 @@ class ScannerApp:
 
             if result.returncode == 0:
                 print("✅ Сканер отвечает на запросы")
+                # Покажем доступные опции сканера
+                print("📋 Доступные опции сканера:")
+                lines = result.stdout.split('\n')
+                for line in lines[:20]:  # Покажем первые 20 строк
+                    if line.strip():
+                        print(f"   {line}")
                 return True
             else:
                 print(f"❌ Сканер не отвечает: {result.stderr}")
@@ -162,6 +166,134 @@ class ScannerApp:
         except Exception as e:
             print(f"❌ Ошибка тестирования сканера: {e}")
             return False
+
+    def test_scanner_options(self):
+        """Тестирует опции сканера, включая автоподатчик"""
+        print("\n🔧 Тестируем опции сканера...")
+
+        scanner_device = scanner_manager.get_scanner_device()
+        if not scanner_device:
+            print("❌ Не удалось определить устройство сканера")
+            return
+
+        print(f"📋 Используем сканер: {scanner_device}")
+
+        # Получим все доступные опции
+        try:
+            result = subprocess.run(
+                ["scanimage", "--device-name", scanner_device, "-A"],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+
+            if result.returncode == 0:
+                print("✅ Доступные опции сканера:")
+                print(result.stdout)
+
+                # Поиск опций связанных с автоподатчиком
+                lines = result.stdout.split('\n')
+                adf_options = []
+                for line in lines:
+                    if any(keyword in line.lower() for keyword in ['adf', 'automatic', 'document', 'feeder', 'source', 'batch']):
+                        adf_options.append(line.strip())
+
+                if adf_options:
+                    print("\n🎯 Найдены опции автоподатчика:")
+                    for option in adf_options:
+                        print(f"   📌 {option}")
+                else:
+                    print("\n❌ Опции автоподатчика не найдены")
+
+            else:
+                print(f"❌ Ошибка: {result.stderr}")
+
+        except Exception as e:
+            print(f"❌ Ошибка получения опций сканера: {e}")
+
+    def test_scan_with_adf(self):
+        """Тестирует сканирование с автоподатчиком"""
+        print("\n📄 Тестируем сканирование с автоподатчиком...")
+
+        scanner_device = scanner_manager.get_scanner_device()
+        if not scanner_device:
+            print("❌ Не удалось определить устройство сканера")
+            return
+
+        print(f"🎯 Тестируем сканер: {scanner_device}")
+
+        # Попробуем разные опции автоподатчика
+        adf_options = [
+            ["--source=ADF"],
+            ["--source=Automatic Document Feeder"],
+            ["--source=Document Feeder"],
+            ["--batch"],
+            ["--batch-prompt"],
+            ["--source=ADF", "--batch"]
+        ]
+
+        for i, options in enumerate(adf_options, 1):
+            print(f"\n🧪 Попытка {i}: {options}")
+
+            try:
+                # Создаем временный файл
+                import tempfile
+                import uuid
+                tmp_path = os.path.join(tempfile.gettempdir(), f"test_adf_{uuid.uuid4()}.pdf")
+
+                # Базовые аргументы
+                scan_args = [
+                    "scanimage",
+                    f"--device-name={scanner_device}",
+                    "--format=pdf",
+                    f"--resolution={getattr(config, 'SCANNER_DPI', 300)}",
+                    f"--mode={getattr(config, 'SCANNER_MODE', 'Color')}",
+                    f"--output-file={tmp_path}"
+                ]
+
+                # Добавляем опции автоподатчика
+                scan_args.extend(options)
+
+                print(f"🔧 Команда: {' '.join(scan_args)}")
+
+                # Выполняем сканирование с таймаутом
+                result = subprocess.run(
+                    scan_args,
+                    capture_output=True,
+                    text=True,
+                    timeout=60
+                )
+
+                if result.returncode == 0:
+                    if os.path.exists(tmp_path) and os.path.getsize(tmp_path) > 0:
+                        file_size = os.path.getsize(tmp_path)
+                        print(f"✅ УСПЕХ! Файл создан: {tmp_path} ({file_size} байт)")
+
+                        # Удаляем временный файл
+                        os.remove(tmp_path)
+                        print("🧹 Временный файл удален")
+
+                        print(f"🎉 Найдены рабочие опции автоподатчика: {options}")
+                        return options
+                    else:
+                        print("❌ Файл не создан или пустой")
+                else:
+                    print(f"❌ Ошибка сканирования: {result.stderr}")
+
+            except subprocess.TimeoutExpired:
+                print("⏰ Таймаут сканирования")
+            except Exception as e:
+                print(f"❌ Ошибка: {e}")
+            finally:
+                # Убедимся, что временный файл удален
+                if 'tmp_path' in locals() and os.path.exists(tmp_path):
+                    try:
+                        os.remove(tmp_path)
+                    except:
+                        pass
+
+        print("\n❌ Не удалось найти рабочие опции автоподатчика")
+        return None
 
     def detect_devices(self):
         """Обнаружение и вывод информации об устройствах"""
@@ -227,32 +359,45 @@ class ScannerApp:
     def interactive_menu(self):
         """Интерактивное меню для тестирования"""
         while True:
-            print("\n" + "="*50)
-            print("🎮 МЕНЮ ТЕСТИРОВАНИЯ СКАНЕРА")
-            print("="*50)
+            print("\n" + "="*60)
+            print("🎮 МЕНЮ ТЕСТИРОВАНИЯ СКАНЕРА С АВТОПОДАТЧИКОМ")
+            print("="*60)
             print("1. 🧪 Эмуляция нажатия кнопки (запуск сканирования)")
             print("2. 🔍 Проверить доступность сканера")
             print("3. 🌐 Проверить подключение к API")
             print("4. 🎹 Проверить клавиатуру")
-            print("5. 🚀 Запуск службы сканирования (ожидание кнопки)")
-            print("6. 🛑 Выход")
-            print("="*50)
+            print("5. 📋 Показать опции сканера")
+            print("6. 🔧 Протестировать опции автоподатчика")
+            print("7. 📄 Тест сканирования с автоподатчиком")
+            print("8. 🚀 Запуск службы сканирования (ожидание кнопки)")
+            print("9. 🛑 Выход")
+            print("="*60)
 
-            choice = input("Выберите действие (1-6): ").strip()
+            choice = input("Выберите действие (1-9): ").strip()
 
             if choice == "1":
                 self.simulate_scan_trigger()
             elif choice == "2":
-                self.test_scanner_manual()
+                self.test_scanner_connection()
             elif choice == "3":
                 self.test_api_connection()
             elif choice == "4":
                 self.test_keyboard_manual()
             elif choice == "5":
+                self.test_scanner_options()
+            elif choice == "6":
+                self.test_scan_with_adf()
+            elif choice == "7":
+                # Тест с найденными опциями автоподатчика
+                adf_options = self.test_scan_with_adf()
+                if adf_options:
+                    print(f"\n💡 Для использования автоподатчика добавьте в config.py:")
+                    print(f"SCANNER_ADF_OPTIONS = {adf_options}")
+            elif choice == "8":
                 print("🚀 Запускаем службу сканирования...")
                 self.start_service()
                 break
-            elif choice == "6":
+            elif choice == "9":
                 print("👋 Выход...")
                 break
             else:
@@ -366,7 +511,7 @@ class ScannerApp:
             else:
                 print("✅ Слушатель клавиатуры запущен (устройство по умолчанию)")
 
-            print("🎹 Нажимайте ENTER или SPACE для запуска сканирования")
+            print("🎹 Нажимайте триггерные кнопки для запуска сканирования")
             print("⏹️  Нажмите Ctrl+C для остановки")
         else:
             print("❌ Не удалось запустить слушатель клавиатуры")
@@ -410,11 +555,15 @@ if __name__ == "__main__":
         elif sys.argv[1] == "--service":
             print("🚀 Запуск в режиме службы")
             app.start_service()
+        elif sys.argv[1] == "--adf-test":
+            print("📄 Тестирование автоподатчика")
+            app.test_scan_with_adf()
         else:
             print("❌ Неизвестный аргумент")
             print("Доступные аргументы:")
-            print("  --test     - однократный тест сканирования")
-            print("  --service  - запуск службы")
+            print("  --test      - однократный тест сканирования")
+            print("  --adf-test  - тестирование автоподатчика")
+            print("  --service   - запуск службы")
             print("  без аргументов - интерактивный режим")
     else:
         # Интерактивный режим по умолчанию

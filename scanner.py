@@ -100,7 +100,7 @@ class ScannerManager:
 
     def scan_document(self, format_type=None, dpi=None, mode=None) -> dict:
         """
-        Выполняет сканирование документа
+        Выполняет сканирование документа с опциональной поддержкой автоподатчика
         """
         if format_type is None:
             format_type = config.SCANNER_FORMAT
@@ -166,6 +166,10 @@ class ScannerManager:
                 f"--mode={mode}",
                 f"--output-file={tmp_path}"
             ]
+
+            # Добавляем опции автоподатчика если включено
+            if use_adf and hasattr(config, 'SCANNER_ADF_OPTIONS'):
+                scan_args.extend(config.SCANNER_ADF_OPTIONS)
 
             logger.info(f"📸 Выполняем сканирование с параметрами: {' '.join(scan_args)}")
 
