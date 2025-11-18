@@ -47,15 +47,15 @@ def test_keyboard():
 
         try:
             for event in keyboard_device.read_loop():
-                if event.type == ecodes.EV_KEY:
-                    key_event = categorize(event)
-                    if key_event.keystate == key_event.key_down:
-                        print(f"   🔘 Нажата кнопка: {key_event.keycode} (код: {event.code}, значение: {event.value})")
+#                 if event.type == ecodes.EV_KEY:
+                key_event = categorize(event)
+                if key_event.keystate == key_event.key_down:
+                    print(f"   🔘 Нажата кнопка: {key_event.keycode} (код: {event.code}, значение: {event.value})")
 
-                        # Выход по ESC
-                        if key_event.keycode == 'KEY_ESC':
-                            print("   🛑 Выход из теста клавиатуры")
-                            break
+                    # Выход по ESC
+                    if key_event.keycode == 'KEY_ESC':
+                        print("   🛑 Выход из теста клавиатуры")
+                        break
         except KeyboardInterrupt:
             print("\n   🛑 Прервано пользователем")
 
