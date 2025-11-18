@@ -273,7 +273,7 @@ def is_trigger_key(self, key_event):
         'KEY_ENTER',
         'KEY_SPACE',
         'KEY_POWER',
-        'KEY_1'  # Добавляем по умолчанию на всякий случай
+        'KEY_1'
     ])
 
     logger.debug(f"🔍 Проверка кнопки {key_name} в списке: {trigger_keys}")
@@ -287,6 +287,8 @@ def keyboard_listener_worker(self, callback):
     """Рабочий процесс для прослушивания нажатий кнопок"""
     device = None
 
+    logger.info("🎹 Запускаем рабочий процесс слушателя клавиатуры...")
+
     while self.scanning:
         try:
             if device is None:
@@ -296,27 +298,43 @@ def keyboard_listener_worker(self, callback):
                     time.sleep(5)
                     continue
 
-                logger.info(f"🎹 Начинаем отслеживание устройства: {device.name}")
+                logger.info(f"🎹 Устройство найдено: {device.name}")
+                logger.info(f"🎹 Начинаем отслеживание устройства: {device.path}")
 
             # Читаем события с устройства
             for event in device.read_loop():
                 if not self.scanning:
+                    logger.info("🛑 Слушатель остановлен")
                     break
 
+                # Обрабатываем только события клавиш
                 if event.type == ecodes.EV_KEY:
-                    key_event = categorize(event)
+                    try:
+                        key_event = categorize(event)
+                        key_name = key_event.keycode
 
-                    # ОТЛАДОЧНЫЙ ВЫВОД: логируем все события клавиш
-                    logger.debug(f"🔍 Событие клавиши: {key_event.keycode} (код: {event.code}, состояние: {key_event.keystate})")
+                        # ОТЛАДОЧНЫЙ ВЫВОД: логируем все события клавиш
+                        logger.info(f"🔍 Событие клавиши: {key_name} (код: {event.code}, значение: {event.value})")
 
-                    if key_event.keystate == key_event.key_down:  # Только при нажатии
-                        logger.info(f"🔘 Нажата кнопка: {key_event.keycode}")
+                        # Обрабатываем как нажатия (1), так и удерживания (2)
+                        if event.value in [1, 2]:  # 1 = нажатие, 2 = удерживается
+                            logger.info(f"🔘 АКТИВНАЯ КНОПКА: {key_name}")
 
-                        if self.is_trigger_key(key_event):
-                            logger.info(f"🎯 ТРИГГЕР! Кнопка {key_event.keycode} в списке триггеров, запускаем сканирование...")
-                            callback()
+                            # Проверяем, является ли кнопка триггером
+                            trigger_keys = getattr(config, 'SCAN_TRIGGER_KEYS', [])
+                            logger.info(f"🔍 Список триггерных кнопок: {trigger_keys}")
+
+                            if key_name in trigger_keys:
+                                logger.info(f"🎯 ТРИГГЕР АКТИВИРОВАН! Кнопка {key_name} запускает сканирование")
+                                callback()
+                            else:
+                                logger.info(f"❌ Кнопка {key_name} не в списке триггеров")
                         else:
-                            logger.info(f"❌ Кнопка {key_event.keycode} не в списке триггеров")
+                            logger.debug(f"📝 Кнопка {key_name} отпущена (значение: {event.value})")
+
+                    except Exception as e:
+                        logger.error(f"❌ Ошибка обработки события клавиши: {e}")
+                        continue
 
         except Exception as e:
             logger.error(f"❌ Ошибка в слушателе устройства: {e}")

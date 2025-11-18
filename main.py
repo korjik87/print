@@ -288,40 +288,51 @@ class ScannerApp:
         except Exception as e:
             print(f"❌ Ошибка выполнения команды: {e}")
 
-    def test_keyboard_manual(self):
-        """Ручное тестирование клавиатуры"""
-        print("\n🎹 Ручное тестирование клавиатуры...")
+def test_keyboard_manual(self):
+    """Ручное тестирование клавиатуры"""
+    print("\n🎹 Ручное тестирование клавиатуры...")
 
-        # Настраиваем evdev
-        if not setup_evdev():
-            print("❌ Модуль evdev не установлен. Установите: pip install evdev")
-            return
+    # Настраиваем evdev
+    if not setup_evdev():
+        print("❌ Модуль evdev не установлен. Установите: pip install evdev")
+        return
 
-        keyboard_device = scanner_manager.find_keyboard_device()
-        if keyboard_device:
-            print(f"✅ Клавиатура найдена: {keyboard_device.name}")
-            print(f"📍 Путь: {keyboard_device.path}")
+    keyboard_device = scanner_manager.find_keyboard_device()
+    if keyboard_device:
+        print(f"✅ Клавиатура найдена: {keyboard_device.name}")
+        print(f"📍 Путь: {keyboard_device.path}")
 
-            # Тестируем чтение событий в реальном времени
-            print("\n🎯 Тестируем события клавиатуры...")
-            print("   Нажмите любую клавишу на клавиатуре (для выхода нажмите ESC)")
-            print("   Или нажмите Ctrl+C для выхода")
+        # Тестируем чтение событий в реальном времени
+        print("\n🎯 Тестируем события клавиатуры...")
+        print("   Нажмите любую клавишу на клавиатуре (для выхода нажмите ESC)")
+        print("   Или нажмите Ctrl+C для выхода")
 
-            try:
-                for event in keyboard_device.read_loop():
-                    if event.type == ecodes.EV_KEY:
-                        key_event = categorize(event)
-                        if key_event.keystate == key_event.key_down:
-                            print(f"   🔘 Нажата кнопка: {key_event.keycode} (код: {event.code})")
+        try:
+            for event in keyboard_device.read_loop():
+                # Обрабатываем только события клавиш
+                if event.type == ecodes.EV_KEY:
+                    key_event = categorize(event)
 
-                            # Выход по ESC
-                            if key_event.keycode == 'KEY_ESC':
-                                print("   🛑 Выход из теста клавиатуры")
-                                break
-            except KeyboardInterrupt:
-                print("\n   🛑 Прервано пользователем")
-        else:
-            print("❌ Клавиатура не найдена")
+                    # Определяем состояние клавиши
+                    if event.value == 0:
+                        state = "отпущена"
+                    elif event.value == 1:
+                        state = "нажата"
+                    elif event.value == 2:
+                        state = "удерживается"
+                    else:
+                        state = f"неизвестно ({event.value})"
+
+                    print(f"   🔘 Клавиша: {key_event.keycode} (код: {event.code}), состояние: {state}")
+
+                    # Выход по ESC (только при нажатии или удерживании)
+                    if key_event.keycode == 'KEY_ESC' and event.value in [1, 2]:
+                        print("   🛑 Выход из теста клавиатуры")
+                        break
+        except KeyboardInterrupt:
+            print("\n   🛑 Прервано пользователем")
+    else:
+        print("❌ Клавиатура не найдена")
 
     def start_service(self):
         """Запуск службы сканирования"""
