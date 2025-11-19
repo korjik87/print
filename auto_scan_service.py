@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Автоматическая служба сканирования с поддержкой автоподатчика
-Запускает сканирование по нажатию кнопки и отправляет файлы на сервер
+Автоматическая служба сканирования.
+Только сканирует и сохраняет файлы, без загрузки.
 """
 
 import os
@@ -21,7 +21,6 @@ except ImportError:
     sys.exit(1)
 
 from scanner import scanner_manager
-from scan_uploader import scan_uploader
 import config
 
 # Настройка логирования
@@ -59,14 +58,15 @@ class AutoScanService:
 
             if scan_result['status'] == 'success':
                 logger.info(f"✅ Сканирование завершено! ID: {scan_result['scan_id']}")
-                logger.info(f"📁 Файл: {scan_result['filename']}")
-                logger.info(f"📊 Размер данных: {len(scan_result['content'])} символов base64")
 
-                # Отправляем скан в админку
-                upload_result = self.upload_scan_to_server(scan_result)
+                # Сохраняем скан в директорию
+                save_result = scanner_manager.storage.save_scan(scan_result)
 
-                # Обрабатываем результат
-                self.handle_scan_result(scan_result, upload_result)
+                if save_result['status'] == 'success':
+                    logger.info(f"💾 Скан сохранен: {save_result['scan_path']}")
+                else:
+                    logger.error(f"❌ Ошибка сохранения скана: {save_result.get('error')}")
+
             else:
                 logger.error(f"❌ Ошибка сканирования: {scan_result['error']}")
 
@@ -75,50 +75,14 @@ class AutoScanService:
         finally:
             self.scanning_in_progress = False
 
-    def upload_scan_to_server(self, scan_result):
-        """Отправляет скан на сервер Laravel"""
-        logger.info("📤 Отправка скана в админку...")
-        return scan_uploader.upload_scan(scan_result)
-
-    def handle_scan_result(self, scan_result, upload_result):
-        """Обработка результатов сканирования и отправки"""
-        if upload_result['upload_status'] == 'success':
-            logger.info("✅ Скан успешно отправлен в админку")
-            if upload_result.get('response_data'):
-                logger.info(f"📋 Ответ сервера: {upload_result['response_data']}")
-        else:
-            logger.error(f"❌ Ошибка отправки: {upload_result['error']}")
-
-            # Сохраняем скан локально для последующей отправки
-            if scan_result.get('content'):
-                backup_file = f"scan_backup_{scan_result['scan_id']}.{'pdf' if scan_result['filename'].endswith('.pdf') else 'png'}"
-                try:
-                    with open(backup_file, 'w') as f:
-                        f.write(scan_result['content'])
-                    logger.info(f"💾 Скан сохранен локально в {backup_file} для последующей отправки")
-                except Exception as e:
-                    logger.error(f"❌ Не удалось сохранить резервную копию: {e}")
-
     def signal_handler(self, sig, frame):
         """Обработчик сигналов для graceful shutdown"""
         logger.info(f"🛑 Получен сигнал {sig}, останавливаемся...")
         self.stop()
 
     def check_connections(self):
-        """Проверяет подключения к API и сканеру"""
+        """Проверяет подключения к сканеру"""
         logger.info("🔍 Проверка подключений...")
-
-        # Проверка API (без test_connection)
-        if not config.LARAVEL_TOKEN:
-            logger.error("❌ LARAVEL_TOKEN не установлен в конфигурации")
-            return False
-
-        if not config.LARAVEL_API or config.LARAVEL_API == "http://localhost":
-            logger.error("❌ LARAVEL_API не настроен правильно")
-            return False
-
-        logger.info(f"🌐 API: {config.LARAVEL_API}")
-        logger.info(f"🔑 Токен: {config.LARAVEL_TOKEN[:10]}...")
 
         # Проверка сканера (использует кешированные данные)
         logger.info("🔍 Проверяем доступность сканера...")
@@ -191,6 +155,7 @@ class AutoScanService:
 
         logger.info("=" * 60)
         logger.info("🎯 СЛУЖБА СКАНИРОВАНИЯ АКТИВНА")
+        logger.info("📁 Сканы сохраняются в: scans_storage/")
         if self.use_adf:
             logger.info("📄 РЕЖИМ: АВТОПОДАТЧИК ДОКУМЕНТОВ")
         logger.info("🎹 Нажимайте триггерные кнопки для сканирования")
@@ -219,6 +184,7 @@ def main():
     """Основная функция"""
     print("🚀 Автоматическая служба сканирования")
     print("📝 Логи будут сохранены в auto_scan_service.log")
+    print("💾 Сканы сохраняются в директорию scans_storage/")
 
     service = AutoScanService()
 

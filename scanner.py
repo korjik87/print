@@ -8,6 +8,8 @@ import select
 import threading
 import logging
 import re
+import json
+from datetime import datetime
 
 try:
     import evdev
@@ -20,6 +22,83 @@ from utils import setup_logger
 
 logger = setup_logger()
 
+class ScanStorage:
+    def __init__(self, storage_dir="scans_storage"):
+        self.storage_dir = storage_dir
+        self._ensure_storage_dir()
+
+    def _ensure_storage_dir(self):
+        """Создает директорию для хранения сканов, если она не существует"""
+        if not os.path.exists(self.storage_dir):
+            os.makedirs(self.storage_dir)
+            # Создаем .gitignore чтобы не отслеживать сканы в git
+            gitignore_path = os.path.join(self.storage_dir, ".gitignore")
+            with open(gitignore_path, "w") as f:
+                f.write("# Автоматически сгенерированные сканы\n")
+                f.write("*.pdf\n")
+                f.write("*.png\n")
+                f.write("*.json\n")
+                f.write("!README.md\n")
+            logger.info(f"📁 Создана директория для хранения сканов: {self.storage_dir}")
+
+    def save_scan(self, scan_result: dict) -> dict:
+        """
+        Сохраняет скан в директорию storage_dir
+        Возвращает информацию о сохраненном файле
+        """
+        try:
+            scan_id = scan_result["scan_id"]
+
+            # Сохраняем файл скана
+            file_extension = "pdf" if scan_result['filename'].endswith('.pdf') else 'png'
+            scan_filename = f"scan_{scan_id}.{file_extension}"
+            scan_path = os.path.join(self.storage_dir, scan_filename)
+
+            # Декодируем base64 и сохраняем файл
+            with open(scan_path, "wb") as f:
+                file_content = base64.b64decode(scan_result["content"])
+                f.write(file_content)
+
+            # Сохраняем метаданные
+            metadata = {
+                "scan_id": scan_id,
+                "filename": scan_filename,
+                "original_filename": scan_result["filename"],
+                "file_path": scan_path,
+                "file_size": os.path.getsize(scan_path),
+                "format": file_extension,
+                "dpi": getattr(config, 'SCANNER_DPI', 300),
+                "mode": getattr(config, 'SCANNER_MODE', 'Color'),
+                "created_at": datetime.now().isoformat(),
+                "status": "pending",  # pending, uploaded, error
+                "upload_attempts": 0,
+                "last_upload_attempt": None,
+                "upload_error": None
+            }
+
+            metadata_filename = f"scan_{scan_id}.json"
+            metadata_path = os.path.join(self.storage_dir, metadata_filename)
+
+            with open(metadata_path, "w", encoding='utf-8') as f:
+                json.dump(metadata, f, indent=2, ensure_ascii=False)
+
+            logger.info(f"💾 Скан сохранен: {scan_path} ({metadata['file_size']} байт)")
+
+            return {
+                "status": "success",
+                "scan_id": scan_id,
+                "scan_path": scan_path,
+                "metadata_path": metadata_path,
+                "metadata": metadata
+            }
+
+        except Exception as e:
+            logger.error(f"❌ Ошибка сохранения скана: {e}")
+            return {
+                "status": "error",
+                "error": str(e)
+            }
+
 class ScannerManager:
     def __init__(self):
         self.scanning = False
@@ -29,7 +108,10 @@ class ScannerManager:
         # Защита от множественного запуска
         self.scan_in_progress = False
         self.last_scan_time = 0
-        self.scan_cooldown = 3  # минимальное время между сканированиями в секундах
+        self.scan_cooldown = 3
+
+        # Хранилище сканов
+        self.storage = ScanStorage()
 
         # Кеш для данных сканера
         self._scanner_cache = None
@@ -322,7 +404,6 @@ class ScannerManager:
                 except Exception as e:
                     logger.warning(f"⚠️ Не удалось удалить временный файл {tmp_path}: {e}")
 
-    # Остальные методы остаются без изменений...
     def find_keyboard_device(self):
         """Находит устройство ввода указанное в конфиге"""
         try:
