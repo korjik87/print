@@ -120,9 +120,6 @@ class AutoScanService:
         logger.info(f"🌐 API: {config.LARAVEL_API}")
         logger.info(f"🔑 Токен: {config.LARAVEL_TOKEN[:10]}...")
 
-        if not scan_uploader.test_connection():
-            logger.warning("❌ Не удалось подключиться к API. Продолжаем без отправки сканов.")
-
         # Проверка сканера
         logger.info("🔍 Проверяем доступность сканера...")
         if not scanner_manager.scanner_exists():

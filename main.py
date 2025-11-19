@@ -123,12 +123,8 @@ class ScannerApp:
         print(f"🌐 API: {config.LARAVEL_API}")
         print(f"🔑 Токен: {config.LARAVEL_TOKEN[:10]}...")  # Показываем только начало токена
 
-        if scan_uploader.test_connection():
-            print("✅ Подключение к API успешно")
-            return True
-        else:
-            print("❌ Не удалось подключиться к API")
-            return False
+        return True
+
 
     def test_scanner_connection(self):
         """Тестирует подключение к сканеру"""

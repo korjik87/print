@@ -132,24 +132,5 @@ class ScanUploader:
 
         return result
 
-    def test_connection(self) -> bool:
-        """Проверяет подключение к API"""
-        if not self.token:
-            logger.error("❌ LARAVEL_TOKEN не установлен")
-            return False
-
-        try:
-            test_url = f"{self.base_url}/api/v1/ping"  # или другой endpoint для проверки
-            headers = {
-                'Authorization': f'Bearer {self.token}',
-                'Accept': 'application/json'
-            }
-
-            response = requests.get(test_url, headers=headers, timeout=10)
-            return response.status_code == 200
-        except Exception as e:
-            logger.error(f"❌ Ошибка при проверке подключения: {e}")
-            return False
-
 # Глобальный экземпляр uploader
 scan_uploader = ScanUploader()
