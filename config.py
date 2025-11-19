@@ -59,4 +59,11 @@ AUTO_DETECT_KEYBOARD = False
 AUTO_DETECT_BUTTONS = True  # Автоматически искать устройства с кнопками
 
 # Опции автоподатчика (найденные через тестирование)
-SCANNER_ADF_OPTIONS = ["--source=ADF", "--batch"]
+SCANNER_ADF_OPTIONS = [
+    "--source=ADF",
+    "--batch",  # для многостраничного сканирования
+    # "--batch-start=0",  # начать с страницы 0
+    # "--batch-count=10", # максимум 10 страниц
+    # "--batch-increment=1" # инкремент страниц
+]
+USE_AUTOMATIC_DOCUMENT_FEEDER = True  # Включить автоподатчик

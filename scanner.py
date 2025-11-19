@@ -33,7 +33,7 @@ class ScannerManager:
                 ["scanimage", "-L"],
                 capture_output=True,
                 text=True,
-                timeout=50
+                timeout=20
             )
 
             if result.returncode != 0:
@@ -55,7 +55,7 @@ class ScannerManager:
                 ["scanimage", "-L"],
                 capture_output=True,
                 text=True,
-                timeout=50
+                timeout=20
             )
             if result.returncode == 0:
                 scanners = []
@@ -98,7 +98,7 @@ class ScannerManager:
                 return device_match.group(1) if device_match else None
             return None
 
-    def scan_document(self, format_type=None, dpi=None, mode=None) -> dict:
+    def scan_document(self, format_type=None, dpi=None, mode=None, use_adf=False) -> dict:
         """
         Выполняет сканирование документа с опциональной поддержкой автоподатчика
         """
@@ -124,6 +124,8 @@ class ScannerManager:
 
         try:
             logger.info(f"🔍 Начинаем сканирование (ID: {result['scan_id']})")
+            if use_adf:
+                logger.info("📄 Используем автоподатчик документов")
 
             # Проверяем доступность сканера
             if not self.scanner_exists():
@@ -157,7 +159,7 @@ class ScannerManager:
             filename = f"scan_{result['scan_id']}.{file_extension}"
             tmp_path = os.path.join(tempfile.gettempdir(), filename)
 
-            # Параметры сканирования
+            # Базовые параметры сканирования
             scan_args = [
                 "scanimage",
                 f"--device-name={scanner_device}",
@@ -167,9 +169,10 @@ class ScannerManager:
                 f"--output-file={tmp_path}"
             ]
 
-            # Добавляем опции автоподатчика если включено
+            # Добавляем опции автоподатчика если включено и настроено
             if use_adf and hasattr(config, 'SCANNER_ADF_OPTIONS'):
                 scan_args.extend(config.SCANNER_ADF_OPTIONS)
+                logger.info(f"🔧 Используем опции автоподатчика: {config.SCANNER_ADF_OPTIONS}")
 
             logger.info(f"📸 Выполняем сканирование с параметрами: {' '.join(scan_args)}")
 
@@ -277,7 +280,7 @@ class ScannerManager:
             'KEY_ENTER',
             'KEY_SPACE',
             'KEY_POWER',
-            'KEY_1'  # Добавляем по умолчанию на всякий случай
+            'KEY_1'
         ])
 
         logger.debug(f"🔍 Проверка кнопки {key_name} в списке: {trigger_keys}")
@@ -373,36 +376,6 @@ class ScannerManager:
         if self.keyboard_listener and self.keyboard_listener.is_alive():
             self.keyboard_listener.join(timeout=5)
         logger.info("✅ Слушатель устройства остановлен")
-
-    def simulate_key_press(self, key_code='KEY_ENTER'):
-        """Эмулирует нажатие кнопки для тестирования"""
-        try:
-            logger.info(f"🧪 Эмулируем нажатие кнопки: {key_code}")
-
-            # Для эмуляции нажатия можно использовать subprocess и xdotool
-            # Но это требует установки xdotool и X11
-            try:
-                subprocess.run(['which', 'xdotool'], check=True)
-                subprocess.run(['xdotool', 'key', key_code.replace('KEY_', '')])
-                logger.info(f"✅ Эмуляция нажатия {key_code} выполнена через xdotool")
-                return True
-            except:
-                logger.warning("⚠️ xdotool не установлен, эмуляция через evdev")
-
-                # Альтернатива через evdev (требует прав)
-                devices = [InputDevice(path) for path in evdev.list_devices()]
-                if devices:
-                    # Используем первое найденное устройство для эмуляции
-                    device = devices[0]
-                    logger.info(f"✅ Эмуляция нажатия {key_code} выполнена")
-                    return True
-                else:
-                    logger.warning("⚠️ Нет устройств для эмуляции нажатия")
-                    return False
-
-        except Exception as e:
-            logger.error(f"❌ Ошибка при эмуляции нажатия: {e}")
-            return False
 
 # Глобальный экземпляр менеджера сканера
 scanner_manager = ScannerManager()
