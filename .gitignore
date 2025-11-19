@@ -2,3 +2,4 @@
 .env
 *.log
 worker.log
+__pycache__
