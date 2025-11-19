@@ -26,8 +26,52 @@ class ScannerManager:
         self.keyboard_listener = None
         self.current_scan_callback = None
 
+        # Защита от множественного запуска
+        self.scan_in_progress = False
+        self.last_scan_time = 0
+        self.scan_cooldown = 3  # минимальное время между сканированиями в секундах
+
+        # Кеш для данных сканера
+        self._scanner_cache = None
+        self._scanner_cache_time = 0
+        self._scanner_cache_ttl = 900
+
+        # Кеш для доступных сканеров
+        self._available_scanners_cache = None
+        self._available_scanners_cache_time = 0
+
+    def _get_scanner_cache(self):
+        """Получает кешированные данные сканера, если они еще актуальны"""
+        if (self._scanner_cache and
+            time.time() - self._scanner_cache_time < self._scanner_cache_ttl):
+            return self._scanner_cache
+        return None
+
+    def _set_scanner_cache(self, value):
+        """Устанавливает кеш сканера"""
+        self._scanner_cache = value
+        self._scanner_cache_time = time.time()
+
+    def can_start_scan(self):
+        """Проверяет, можно ли начать новое сканирование"""
+        if self.scan_in_progress:
+            logger.debug("⏳ Сканирование уже выполняется, пропускаем")
+            return False
+
+        current_time = time.time()
+        if current_time - self.last_scan_time < self.scan_cooldown:
+            logger.debug("⏳ Сканирование было недавно, пропускаем")
+            return False
+
+        return True
+
     def scanner_exists(self) -> bool:
-        """Проверяет, доступен ли указанный в конфиге сканер"""
+        """Проверяет, доступен ли указанный в конфиге сканер (с кешированием)"""
+        cached_result = self._get_scanner_cache()
+        if cached_result is not None:
+            logger.debug("✅ Используем кешированные данные сканера")
+            return cached_result
+
         try:
             result = subprocess.run(
                 ["scanimage", "-L"],
@@ -36,20 +80,39 @@ class ScannerManager:
                 timeout=50
             )
 
-            if result.returncode != 0:
-                return False
+            scanner_available = False
+            if result.returncode == 0:
+                if hasattr(config, 'SCANNER_DEVICE') and config.SCANNER_DEVICE:
+                    scanner_available = config.SCANNER_DEVICE in result.stdout
+                else:
+                    scanner_available = bool(result.stdout.strip())
 
-            if hasattr(config, 'SCANNER_DEVICE') and config.SCANNER_DEVICE:
-                return config.SCANNER_DEVICE in result.stdout
+            # Кешируем результат
+            self._set_scanner_cache(scanner_available)
+
+            if scanner_available:
+                logger.info("✅ Сканер доступен (данные закешированы)")
             else:
-                return bool(result.stdout.strip())
+                logger.warning("❌ Сканер недоступен")
 
+            return scanner_available
+
+        except subprocess.TimeoutExpired:
+            logger.error("❌ Таймаут при проверке сканера")
+            # Не кешируем при ошибке таймаута
+            return False
         except Exception as e:
-            logger.error(f"Ошибка при проверке сканера: {e}")
+            logger.error(f"❌ Ошибка при проверке сканера: {e}")
             return False
 
     def get_available_scanners(self):
-        """Получает список доступных сканеров"""
+        """Получает список доступных сканеров (с кешированием)"""
+        # Используем кеш, если он есть и не старше 5 минут
+        if (self._available_scanners_cache and
+            time.time() - self._available_scanners_cache_time < 300):
+            logger.debug("✅ Используем кешированный список сканеров")
+            return self._available_scanners_cache
+
         try:
             result = subprocess.run(
                 ["scanimage", "-L"],
@@ -57,22 +120,39 @@ class ScannerManager:
                 text=True,
                 timeout=50
             )
+
+            scanners = []
             if result.returncode == 0:
-                scanners = []
                 for line in result.stdout.splitlines():
                     if line.strip():
                         scanners.append(line.strip())
-                return scanners
-            return []
+
+            # Кешируем результат
+            self._available_scanners_cache = scanners
+            self._available_scanners_cache_time = time.time()
+
+            logger.info(f"✅ Получен список сканеров ({len(scanners)} шт.), данные закешированы")
+            return scanners
+
+        except subprocess.TimeoutExpired:
+            logger.error("❌ Таймаут при получении списка сканеров")
+            # Возвращаем кеш, даже если старый, при таймауте
+            return self._available_scanners_cache or []
         except Exception as e:
-            logger.error(f"Ошибка при получении списка сканеров: {e}")
-            return []
+            logger.error(f"❌ Ошибка при получении списка сканеров: {e}")
+            return self._available_scanners_cache or []
 
     def get_scanner_device(self):
-        """Возвращает устройство сканера для использования"""
-        if hasattr(config, 'SCANNER_DEVICE') and config.SCANNER_DEVICE:
-            scanners = self.get_available_scanners()
+        """Возвращает устройство сканера для использования (с кешированием)"""
+        # Используем кешированные данные о доступности
+        if not self.scanner_exists():
+            return None
 
+        scanners = self.get_available_scanners()
+        if not scanners:
+            return None
+
+        if hasattr(config, 'SCANNER_DEVICE') and config.SCANNER_DEVICE:
             # Ищем точное совпадение
             for scanner in scanners:
                 if config.SCANNER_DEVICE in scanner:
@@ -82,21 +162,15 @@ class ScannerManager:
                         logger.info(f"✅ Найден сканер: {device_id}")
                         return device_id
 
-            # Если точного совпадения нет, используем первый доступный
-            if scanners:
-                device_match = re.search(r"device `([^']+)'", scanners[0])
-                if device_match:
-                    device_id = device_match.group(1)
-                    logger.info(f"✅ Используем первый доступный сканер: {device_id}")
-                    return device_id
+        # Если точного совпадения нет, используем первый доступный
+        if scanners:
+            device_match = re.search(r"device `([^']+)'", scanners[0])
+            if device_match:
+                device_id = device_match.group(1)
+                logger.info(f"✅ Используем первый доступный сканер: {device_id}")
+                return device_id
 
-            return None
-        else:
-            scanners = self.get_available_scanners()
-            if scanners:
-                device_match = re.search(r"device `([^']+)'", scanners[0])
-                return device_match.group(1) if device_match else None
-            return None
+        return None
 
     def scan_document(self, format_type=None, dpi=None, mode=None, use_adf=False) -> dict:
         """
@@ -117,22 +191,26 @@ class ScannerManager:
             "filename": None
         }
 
-        if config.DISABLE_SCAN:
+        if getattr(config, 'DISABLE_SCAN', False):
             logger.info("Сканирование отключено (режим отладки)")
             result["log_status"] = "debug"
             return result
+
+        # Устанавливаем флаг выполнения сканирования
+        self.scan_in_progress = True
+        self.last_scan_time = time.time()
 
         try:
             logger.info(f"🔍 Начинаем сканирование (ID: {result['scan_id']})")
             if use_adf:
                 logger.info("📄 Используем автоподатчик документов")
 
-            # Проверяем доступность сканера
+            # Проверяем доступность сканера (использует кеш)
             if not self.scanner_exists():
                 available_scanners = self.get_available_scanners()
                 error_msg = (
                     f"Сканер не найден в системе. "
-                    f"Доступные сканеры: {', '.join(available_scanners) if available_scanners else 'не найдены'}"
+                    f"Доступные сканеры: {len(available_scanners)}"
                 )
                 logger.error(error_msg)
                 result.update({
@@ -141,7 +219,7 @@ class ScannerManager:
                 })
                 return result
 
-            # Получаем устройство сканера
+            # Получаем устройство сканера (использует кеш)
             scanner_device = self.get_scanner_device()
             if not scanner_device:
                 error_msg = "Не удалось определить устройство сканера"
@@ -174,7 +252,8 @@ class ScannerManager:
                 scan_args.extend(config.SCANNER_ADF_OPTIONS)
                 logger.info(f"🔧 Используем опции автоподатчика: {config.SCANNER_ADF_OPTIONS}")
 
-            logger.info(f"📸 Выполняем сканирование с параметрами: {' '.join(scan_args)}")
+            logger.info(f"📸 Выполняем сканирование...")
+            logger.debug(f"Параметры: {' '.join(scan_args)}")
 
             # Выполняем сканирование
             scan_result = subprocess.run(
@@ -203,7 +282,8 @@ class ScannerManager:
                 })
                 return result
 
-            logger.info(f"💾 Отсканированный файл сохранен: {tmp_path} ({os.path.getsize(tmp_path)} байт)")
+            file_size = os.path.getsize(tmp_path)
+            logger.info(f"💾 Отсканированный файл сохранен: {tmp_path} ({file_size} байт)")
 
             # Читаем файл и кодируем в base64
             with open(tmp_path, "rb") as f:
@@ -231,18 +311,21 @@ class ScannerManager:
             })
             return result
         finally:
+            # Сбрасываем флаг выполнения сканирования
+            self.scan_in_progress = False
+
             # Удаляем временный файл
             if 'tmp_path' in locals() and os.path.exists(tmp_path):
                 try:
                     os.remove(tmp_path)
-                    logger.info(f"🧹 Временный файл удален: {tmp_path}")
+                    logger.debug(f"🧹 Временный файл удален: {tmp_path}")
                 except Exception as e:
                     logger.warning(f"⚠️ Не удалось удалить временный файл {tmp_path}: {e}")
 
+    # Остальные методы остаются без изменений...
     def find_keyboard_device(self):
         """Находит устройство ввода указанное в конфиге"""
         try:
-            # Если в конфиге указан конкретный путь к клавиатуре
             if hasattr(config, 'KEYBOARD_DEVICE') and config.KEYBOARD_DEVICE:
                 if os.path.exists(config.KEYBOARD_DEVICE):
                     device = InputDevice(config.KEYBOARD_DEVICE)
@@ -260,8 +343,6 @@ class ScannerManager:
 
                         if available_trigger_keys:
                             logger.info(f"🎯 Доступные кнопки для сканирования: {', '.join(available_trigger_keys)}")
-                        else:
-                            logger.warning(f"⚠️ На устройстве нет настроенных кнопок для сканирования")
 
                     return device
                 else:
@@ -274,19 +355,12 @@ class ScannerManager:
     def is_trigger_key(self, key_event):
         """Проверяет, является ли нажатая кнопка триггером для сканирования"""
         key_name = key_event.keycode
-
-        # Получаем список триггерных кнопок из конфига
         trigger_keys = getattr(config, 'SCAN_TRIGGER_KEYS', [
-            'KEY_ENTER',
-            'KEY_SPACE',
-            'KEY_POWER',
-            'KEY_1'
+            'KEY_ENTER', 'KEY_SPACE', 'KEY_POWER', 'KEY_1'
         ])
 
-        logger.debug(f"🔍 Проверка кнопки {key_name} в списке: {trigger_keys}")
-
         is_trigger = key_name in trigger_keys
-        logger.debug(f"🔍 Результат проверки: {is_trigger}")
+        logger.debug(f"🔍 Проверка кнопки {key_name}: {'триггер' if is_trigger else 'не триггер'}")
 
         return is_trigger
 
@@ -306,7 +380,6 @@ class ScannerManager:
                         continue
 
                     logger.info(f"🎹 Устройство найдено: {device.name}")
-                    logger.info(f"🎹 Начинаем отслеживание устройства: {device.path}")
 
                 # Читаем события с устройства
                 for event in device.read_loop():
@@ -320,28 +393,22 @@ class ScannerManager:
                             key_event = categorize(event)
                             key_name = key_event.keycode
 
-                            # ОТЛАДОЧНЫЙ ВЫВОД: логируем все события клавиш
-                            logger.info(f"🔍 Событие клавиши: {key_name} (код: {event.code}, значение: {event.value})")
-
                             # Обрабатываем как нажатия (1), так и удерживания (2)
-                            if event.value in [1, 2]:  # 1 = нажатие, 2 = удерживается
-                                logger.info(f"🔘 АКТИВНАЯ КНОПКА: {key_name}")
+                            if event.value in [1, 2]:
+                                logger.info(f"🔘 Нажата кнопка: {key_name}")
 
-                                # Проверяем, является ли кнопка триггером
-                                trigger_keys = getattr(config, 'SCAN_TRIGGER_KEYS', [])
-                                logger.info(f"🔍 Список триггерных кнопок: {trigger_keys}")
-
-                                if key_name in trigger_keys:
-                                    logger.info(f"🎯 ТРИГГЕР АКТИВИРОВАН! Кнопка {key_name} запускает сканирование")
-                                    callback()
+                                if self.is_trigger_key(key_event):
+                                    # Проверяем, можно ли начать сканирование
+                                    if self.can_start_scan():
+                                        logger.info(f"🎯 ТРИГГЕР! Запускаем сканирование")
+                                        callback()
+                                    else:
+                                        logger.debug("⏳ Сканирование уже выполняется или недавно было, пропускаем")
                                 else:
-                                    logger.info(f"❌ Кнопка {key_name} не в списке триггеров")
-                            else:
-                                logger.debug(f"📝 Кнопка {key_name} отпущена (значение: {event.value})")
+                                    logger.debug(f"❌ Кнопка {key_name} не в списке триггеров")
 
                         except Exception as e:
                             logger.error(f"❌ Ошибка обработки события клавиши: {e}")
-                            continue
 
             except Exception as e:
                 logger.error(f"❌ Ошибка в слушателе устройства: {e}")

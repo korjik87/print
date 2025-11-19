@@ -108,7 +108,7 @@ class AutoScanService:
         """Проверяет подключения к API и сканеру"""
         logger.info("🔍 Проверка подключений...")
 
-        # Проверка API
+        # Проверка API (без test_connection)
         if not config.LARAVEL_TOKEN:
             logger.error("❌ LARAVEL_TOKEN не установлен в конфигурации")
             return False
@@ -120,7 +120,7 @@ class AutoScanService:
         logger.info(f"🌐 API: {config.LARAVEL_API}")
         logger.info(f"🔑 Токен: {config.LARAVEL_TOKEN[:10]}...")
 
-        # Проверка сканера
+        # Проверка сканера (использует кешированные данные)
         logger.info("🔍 Проверяем доступность сканера...")
         if not scanner_manager.scanner_exists():
             logger.error("❌ Указанный сканер не найден")
