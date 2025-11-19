@@ -282,6 +282,9 @@ class ScannerManager:
         self.scan_in_progress = True
         self.last_scan_time = time.time()
 
+        tmp_path = None
+        tmp_files_to_cleanup = []  # Список файлов для очистки
+
         try:
             logger.info(f"🔍 Начинаем сканирование (ID: {result['scan_id']})")
             if use_adf:
@@ -314,25 +317,41 @@ class ScannerManager:
 
             logger.info(f"🎯 Используем сканер: {scanner_device}")
 
-            # Создаем временный файл для сканирования
-            file_extension = "pdf" if format_type.lower() == "pdf" else "png"
-            filename = f"scan_{result['scan_id']}.{file_extension}"
-            tmp_path = os.path.join(tempfile.gettempdir(), filename)
-
             # Базовые параметры сканирования
             scan_args = [
                 "scanimage",
                 f"--device-name={scanner_device}",
-                f"--format={format_type.lower()}" if format_type.lower() == "pdf" else "--format=png",
                 f"--resolution={dpi}",
                 f"--mode={mode}",
-                f"--output-file={tmp_path}"
             ]
 
-            # Добавляем опции автоподатчика если включено и настроено
-            if use_adf and hasattr(config, 'SCANNER_ADF_OPTIONS'):
-                scan_args.extend(config.SCANNER_ADF_OPTIONS)
-                logger.info(f"🔧 Используем опции автоподатчика: {config.SCANNER_ADF_OPTIONS}")
+            # Обработка ADF и формата
+            if use_adf:
+                # Для ADF используем только PDF формат (как показали тесты)
+                filename = f"scan_{result['scan_id']}.pdf"
+                tmp_path = os.path.join(tempfile.gettempdir(), filename)
+
+                scan_args.extend([
+                    "--source=ADF",
+                    "--format=pdf",
+                    f"--output-file={tmp_path}"
+                ])
+
+                # Добавляем дополнительные опции ADF из конфига если есть
+                if hasattr(config, 'SCANNER_ADF_OPTIONS'):
+                    scan_args.extend(config.SCANNER_ADF_OPTIONS)
+                    logger.info(f"🔧 Используем опции автоподатчика: {config.SCANNER_ADF_OPTIONS}")
+
+            else:
+                # Обычное сканирование (планшет)
+                file_extension = "pdf" if format_type.lower() == "pdf" else "png"
+                filename = f"scan_{result['scan_id']}.{file_extension}"
+                tmp_path = os.path.join(tempfile.gettempdir(), filename)
+
+                scan_args.extend([
+                    f"--format={format_type.lower()}",
+                    f"--output-file={tmp_path}"
+                ])
 
             logger.info(f"📸 Выполняем сканирование...")
             logger.debug(f"Параметры: {' '.join(scan_args)}")
@@ -342,17 +361,24 @@ class ScannerManager:
                 scan_args,
                 capture_output=True,
                 text=True,
-                timeout=120  # 2 минуты на сканирование
+                timeout=300  # 5 минут для ADF
             )
 
+            # Проверяем результат сканирования
             if scan_result.returncode != 0:
                 error_msg = scan_result.stderr.strip()
-                logger.error(f"❌ Ошибка сканирования: {error_msg}")
-                result.update({
-                    "status": "error",
-                    "error": f"Ошибка сканирования: {error_msg}"
-                })
-                return result
+
+                # Игнорируем ошибку "Document feeder out of documents" - это нормально для ADF
+                if use_adf and "Document feeder out of documents" in error_msg:
+                    logger.info("📄 Автоподатчик: все документы отсканированы")
+                    # Продолжаем обработку, так это не критическая ошибка
+                else:
+                    logger.error(f"❌ Ошибка сканирования: {error_msg}")
+                    result.update({
+                        "status": "error",
+                        "error": f"Ошибка сканирования: {error_msg}"
+                    })
+                    return result
 
             # Проверяем, что файл создан и не пустой
             if not os.path.exists(tmp_path) or os.path.getsize(tmp_path) == 0:
@@ -372,6 +398,13 @@ class ScannerManager:
                 file_content = f.read()
                 result["content"] = base64.b64encode(file_content).decode('utf-8')
                 result["filename"] = filename
+
+            # Дополнительная информация для ADF
+            if use_adf:
+                result["scan_type"] = "adf"
+                result["pages"] = 1  # Можно добавить логику подсчета страниц если нужно
+            else:
+                result["scan_type"] = "flatbed"
 
             logger.info(f"✅ Сканирование {result['scan_id']} успешно завершено")
             return result
@@ -396,13 +429,21 @@ class ScannerManager:
             # Сбрасываем флаг выполнения сканирования
             self.scan_in_progress = False
 
-            # Удаляем временный файл
-            if 'tmp_path' in locals() and os.path.exists(tmp_path):
+            # Удаляем временные файлы
+            files_to_clean = []
+            if tmp_path and os.path.exists(tmp_path):
+                files_to_clean.append(tmp_path)
+
+            # Добавляем любые другие временные файлы
+            files_to_clean.extend(tmp_files_to_cleanup)
+
+            for file_path in files_to_clean:
                 try:
-                    os.remove(tmp_path)
-                    logger.debug(f"🧹 Временный файл удален: {tmp_path}")
+                    if os.path.exists(file_path):
+                        os.remove(file_path)
+                        logger.debug(f"🧹 Временный файл удален: {file_path}")
                 except Exception as e:
-                    logger.warning(f"⚠️ Не удалось удалить временный файл {tmp_path}: {e}")
+                    logger.warning(f"⚠️ Не удалось удалить временный файл {file_path}: {e}")
 
     def find_keyboard_device(self):
         """Находит устройство ввода указанное в конфиге"""
