@@ -257,7 +257,7 @@ class ScannerManager:
     def scan_document(self, format_type=None, dpi=None, mode=None, use_adf=False) -> dict:
         """
         Выполняет сканирование документа с опциональной поддержкой автоподатчика
-        Возвращает результат с информацией о количестве страниц
+        Для ADF использует сканирование в отдельные TIFF с последующей сборкой в PDF
         """
         if format_type is None:
             format_type = config.SCANNER_FORMAT
@@ -272,7 +272,7 @@ class ScannerManager:
             "error": None,
             "content": None,
             "filename": None,
-            "pages": 1,  # По умолчанию 1 страница
+            "pages": 1,
             "scan_type": "flatbed",
             "format": format_type.lower(),
             "file_size": 0
@@ -283,260 +283,274 @@ class ScannerManager:
             result["log_status"] = "debug"
             return result
 
-        # Устанавливаем флаг выполнения сканирования
         self.scan_in_progress = True
         self.last_scan_time = time.time()
-
-        tmp_path = None
-        tmp_files_to_cleanup = []  # Список файлов для очистки
 
         try:
             logger.info(f"🔍 Начинаем сканирование (ID: {result['scan_id']})")
             if use_adf:
-                logger.info("📄 Используем автоподатчик документов")
+                logger.info("📄 Используем автоподатчик документов (режим: TIFF → PDF)")
                 result["scan_type"] = "adf"
 
-            # Проверяем доступность сканера (использует кеш)
+            # Проверка доступности сканера
             if not self.scanner_exists():
                 available_scanners = self.get_available_scanners()
-                error_msg = (
-                    f"Сканер не найден в системе. "
-                    f"Доступные сканеры: {len(available_scanners)}"
-                )
+                error_msg = f"Сканер не найден. Доступные сканеры: {len(available_scanners)}"
                 logger.error(error_msg)
-                result.update({
-                    "status": "error",
-                    "error": error_msg
-                })
+                result.update({"status": "error", "error": error_msg})
                 return result
 
-            # Получаем устройство сканера (использует кеш)
             scanner_device = self.get_scanner_device()
             if not scanner_device:
                 error_msg = "Не удалось определить устройство сканера"
                 logger.error(error_msg)
-                result.update({
-                    "status": "error",
-                    "error": error_msg
-                })
+                result.update({"status": "error", "error": error_msg})
                 return result
 
             logger.info(f"🎯 Используем сканер: {scanner_device}")
 
-            # ПРЕДВАРИТЕЛЬНАЯ ПРОВЕРКА: Пытаемся разбудить сканер перед началом сканирования
+            # ПРЕДВАРИТЕЛЬНАЯ ПРОВЕРКА И ПРОБУЖДЕНИЕ СКАНЕРА
             if not self._check_scanner_ready(scanner_device):
                 logger.warning("😴 Сканер не отвечает. Пытаемся разбудить...")
                 if not self._wake_up_scanner_advanced(scanner_device):
                     error_msg = "Не удалось разбудить сканер. Проверьте питание и подключение."
                     logger.error(f"❌ {error_msg}")
-                    result.update({
-                        "status": "error",
-                        "error": error_msg
-                    })
+                    result.update({"status": "error", "error": error_msg})
                     return result
                 logger.info("✅ Сканер разбужен, продолжаем сканирование...")
 
-            # Базовые параметры сканирования
+            # РАЗДЕЛЯЕМ ЛОГИКУ ДЛЯ ADF И ОБЫЧНОГО СКАНИРОВАНИЯ
+            if use_adf:
+                # ДЛЯ ADF: сканируем в отдельные TIFF файлы, затем объединяем в PDF
+                return self._scan_with_adf_tiff(scanner_device, result, dpi, mode)
+            else:
+                # Обычное сканирование (планшет) - оставляем как было
+                return self._scan_flatbed(scanner_device, result, format_type, dpi, mode)
+
+        except Exception as e:
+            error_msg = f"Критическая ошибка сканирования: {str(e)}"
+            logger.error(f"❌ {error_msg}")
+            result.update({"status": "error", "error": error_msg})
+            return result
+        finally:
+            self.scan_in_progress = False
+
+    def _scan_with_adf_tiff(self, scanner_device, result, dpi, mode):
+        """
+        Сканирование с ADF через отдельные TIFF файлы с последующей сборкой в PDF
+        Использует профессиональный подход: --batch с TIFF форматом
+        """
+        import glob
+
+        temp_dir = tempfile.gettempdir()
+
+        # Создаем уникальный префикс для временных файлов
+        scan_prefix = f"adf_scan_{result['scan_id']}"
+        tiff_pattern = os.path.join(temp_dir, f"{scan_prefix}_p*.tiff")
+        final_pdf_path = os.path.join(temp_dir, f"scan_{result['scan_id']}.pdf")
+
+        tmp_files_to_cleanup = [final_pdf_path]
+
+        try:
+            # Шаг 1: Сканируем в отдельные TIFF файлы с использованием --batch
             scan_args = [
                 "scanimage",
                 f"--device-name={scanner_device}",
                 f"--resolution={dpi}",
                 f"--mode={mode}",
+                "--source=ADF",
+                "--format=tiff",
+                f"--batch={os.path.join(temp_dir, scan_prefix + '_p%04d.tiff')}"  # p0001.tiff, p0002.tiff, etc.
             ]
 
-            # Обработка ADF и формата
-            if use_adf:
-                # Для ADF используем только PDF формат (как показали тесты)
-                effective_format = "pdf"
-                filename = f"scan_{result['scan_id']}.pdf"
-                tmp_path = os.path.join(tempfile.gettempdir(), filename)
+            # Добавляем дополнительные опции ADF из конфига
+            if hasattr(config, 'SCANNER_ADF_OPTIONS'):
+                scan_args.extend(config.SCANNER_ADF_OPTIONS)
+                logger.info(f"🔧 Используем опции автоподатчика: {config.SCANNER_ADF_OPTIONS}")
 
-                scan_args.extend([
-                    "--source=ADF",
-                    "--format=pdf",
-                    f"--output-file={tmp_path}"
-                ])
-
-                # Добавляем дополнительные опции ADF из конфига если есть
-                if hasattr(config, 'SCANNER_ADF_OPTIONS'):
-                    scan_args.extend(config.SCANNER_ADF_OPTIONS)
-                    logger.info(f"🔧 Используем опции автоподатчика: {config.SCANNER_ADF_OPTIONS}")
-
-            else:
-                # Обычное сканирование - используем запрошенный формат
-                effective_format = format_type.lower()
-                file_extension = "pdf" if effective_format == "pdf" else "png"
-                filename = f"scan_{result['scan_id']}.{file_extension}"
-                tmp_path = os.path.join(tempfile.gettempdir(), filename)
-
-                scan_args.extend([
-                    f"--format={effective_format}",
-                    f"--output-file={tmp_path}"
-                ])
-
-            logger.info(f"📸 Выполняем сканирование...")
+            logger.info(f"📸 Выполняем ADF сканирование в отдельные TIFF...")
             logger.debug(f"Параметры: {' '.join(scan_args)}")
 
-            # Выполняем сканирование с возможностью пробуждения сканера
-            max_retries = 2
-            retry_count = 0
-            scan_successful = False
+            # Выполняем сканирование
+            scan_result = subprocess.run(
+                scan_args,
+                capture_output=True,
+                text=True,
+                timeout=300  # 5 минут для ADF
+            )
 
-            while retry_count <= max_retries and not scan_successful:
-                try:
-                    scan_result = subprocess.run(
-                        scan_args,
-                        capture_output=True,
-                        text=True,
-                        timeout=300  # 5 минут для ADF
-                    )
+            # Обработка результата сканирования
+            if scan_result.returncode != 0:
+                error_msg = scan_result.stderr.strip()
 
-                    # Если сканирование завершилось без ошибок кода возврата
-                    if scan_result.returncode == 0:
-                        scan_successful = True
-                        break
-
-                    # Обрабатываем ошибки
-                    error_msg = scan_result.stderr.strip()
-
-                    # Игнорируем ошибку "Document feeder out of documents" - это нормально для ADF
-                    if use_adf and "Document feeder out of documents" in error_msg:
-                        logger.info("📄 Автоподатчик: все документы отсканированы")
-                        scan_successful = True
-                        break
-
-                    # Если это первая попытка и есть признаки "спящего" сканера, пробуем разбудить
-                    if retry_count == 0 and self._is_scanner_sleep_error(error_msg):
-                        logger.warning("😴 Сканер, возможно, в спящем режиме. Пытаемся разбудить...")
-                        if self._wake_up_scanner_advanced(scanner_device):
-                            retry_count += 1
-                            time.sleep(8)  # Даем больше времени сканеру проснуться
-                            continue
-                        else:
-                            logger.error("❌ Не удалось разбудить сканер")
-
-                    # Другие ошибки - прерываем
-                    logger.error(f"❌ Ошибка сканирования: {error_msg}")
-                    result.update({
-                        "status": "error",
-                        "error": f"Ошибка сканирования: {error_msg}"
-                    })
+                # Игнорируем ошибку "Document feeder out of documents" для ADF
+                if "Document feeder out of documents" in error_msg:
+                    logger.info("📄 Автоподатчик: все документы отсканированы")
+                else:
+                    logger.error(f"❌ Ошибка ADF сканирования: {error_msg}")
+                    result.update({"status": "error", "error": f"Ошибка сканирования: {error_msg}"})
                     return result
 
-                except subprocess.TimeoutExpired:
-                    if retry_count == 0:
-                        logger.warning("⏰ Таймаут сканирования. Пытаемся разбудить сканер...")
-                        if self._wake_up_scanner_advanced(scanner_device):
-                            retry_count += 1
-                            time.sleep(8)
-                            continue
-                        else:
-                            error_msg = "Не удалось разбудить сканер после таймаута"
-                            logger.error(f"❌ {error_msg}")
-                            result.update({
-                                "status": "error",
-                                "error": error_msg
-                            })
-                            return result
-                    else:
-                        error_msg = "Таймаут сканирования после попытки пробуждения"
-                        logger.error(f"❌ {error_msg}")
-                        result.update({
-                            "status": "error",
-                            "error": error_msg
-                        })
-                        return result
-
-            # Если после всех попыток сканирование не удалось
-            if not scan_successful:
-                error_msg = "Сканирование не удалось после нескольких попыток"
+            # Шаг 2: Находим все созданные TIFF файлы
+            tiff_files = sorted(glob.glob(tiff_pattern))
+            if not tiff_files:
+                error_msg = "ADF сканирование завершилось, но TIFF файлы не созданы"
                 logger.error(f"❌ {error_msg}")
-                result.update({
-                    "status": "error",
-                    "error": error_msg
-                })
+                result.update({"status": "error", "error": error_msg})
                 return result
 
-            # Проверяем, что файл создан
-            if not os.path.exists(tmp_path):
-                error_msg = "Сканирование завершилось, но файл не создан"
+            # Добавляем TIFF файлы в список для очистки
+            tmp_files_to_cleanup.extend(tiff_files)
+
+            page_count = len(tiff_files)
+            result["pages"] = page_count
+            logger.info(f"📄 ADF отсканировано страниц: {page_count}")
+
+            # Шаг 3: Объединяем TIFF в PDF с помощью ImageMagick
+            logger.info(f"🔄 Объединяем {page_count} TIFF файлов в PDF...")
+
+            try:
+                # Используем ImageMagick convert для объединения TIFF в PDF
+                convert_args = ["convert"] + tiff_files + [final_pdf_path]
+                convert_result = subprocess.run(
+                    convert_args,
+                    capture_output=True,
+                    text=True,
+                    timeout=120  # 2 минуты на конвертацию
+                )
+
+                if convert_result.returncode != 0:
+                    error_msg = f"ImageMagick error: {convert_result.stderr}"
+                    raise Exception(error_msg)
+
+                logger.info(f"✅ PDF создан с помощью ImageMagick: {final_pdf_path}")
+
+            except FileNotFoundError:
+                error_msg = "ImageMagick (convert) не установлен. Установите: sudo apt-get install imagemagick"
                 logger.error(f"❌ {error_msg}")
-                result.update({
-                    "status": "error",
-                    "error": error_msg
-                })
+                result.update({"status": "error", "error": error_msg})
+                return result
+            except Exception as e:
+                error_msg = f"Ошибка при объединении TIFF в PDF: {str(e)}"
+                logger.error(f"❌ {error_msg}")
+                result.update({"status": "error", "error": error_msg})
                 return result
 
-            file_size = os.path.getsize(tmp_path)
+            # Шаг 4: Проверяем и читаем финальный PDF
+            if not os.path.exists(final_pdf_path):
+                error_msg = "Не удалось создать итоговый PDF файл"
+                logger.error(f"❌ {error_msg}")
+                result.update({"status": "error", "error": error_msg})
+                return result
+
+            file_size = os.path.getsize(final_pdf_path)
             result["file_size"] = file_size
+            result["filename"] = f"scan_{result['scan_id']}.pdf"
 
-            # Проверяем, что файл не пустой и имеет минимальный размер
-            min_file_size = 500  # Минимальный размер файла в байтах
-            if file_size <= min_file_size:
-                error_msg = f"Сканирование завершилось, но файл слишком маленький ({file_size} байт) - возможно, автоподатчик пуст"
-                logger.error(f"❌ {error_msg}")
-                result.update({
-                    "status": "error",
-                    "error": error_msg
-                })
-                return result
+            logger.info(f"💾 Финальный PDF: {final_pdf_path} ({file_size} байт)")
 
-            logger.info(f"💾 Отсканированный файл сохранен: {tmp_path} ({file_size} байт)")
-
-            # Подсчет страниц для PDF файлов
-            if effective_format == "pdf":
-                page_count = self._count_pdf_pages(tmp_path, file_size)
-                result["pages"] = page_count
-
-                if use_adf:
-                    if page_count == 0:
-                        logger.warning("⚠️ PDF создан, но не содержит страниц")
-                    else:
-                        logger.info(f"📄 Обнаружено страниц в PDF: {page_count}")
-                else:
-                    logger.info(f"📄 Страниц в PDF: {page_count}")
-
-            # Читаем файл и кодируем в base64
-            with open(tmp_path, "rb") as f:
+            # Читаем и кодируем файл
+            with open(final_pdf_path, "rb") as f:
                 file_content = f.read()
                 result["content"] = base64.b64encode(file_content).decode('utf-8')
-                result["filename"] = filename
 
-            logger.info(f"✅ Сканирование {result['scan_id']} успешно завершено")
-            if use_adf:
-                logger.info(f"📊 Итоги ADF сканирования: {result['pages']} страниц, {file_size} байт")
-            else:
-                logger.info(f"📊 Итоги сканирования: {result['pages']} страниц, {file_size} байт")
+            logger.info(f"✅ ADF сканирование {result['scan_id']} успешно завершено")
+            logger.info(f"📊 Итоги: {result['pages']} страниц, {file_size} байт")
 
             return result
 
-        except Exception as e:
-            error_msg = f"Критическая ошибка сканирования: {str(e)}"
+        except subprocess.TimeoutExpired:
+            error_msg = "Таймаут ADF сканирования"
             logger.error(f"❌ {error_msg}")
-            result.update({
-                "status": "error",
-                "error": error_msg
-            })
+            result.update({"status": "error", "error": error_msg})
+            return result
+        except Exception as e:
+            error_msg = f"Ошибка при обработке ADF сканирования: {str(e)}"
+            logger.error(f"❌ {error_msg}")
+            result.update({"status": "error", "error": error_msg})
             return result
         finally:
-            # Сбрасываем флаг выполнения сканирования
-            self.scan_in_progress = False
+            # Очистка временных файлов
+            self._cleanup_temp_files(tmp_files_to_cleanup)
 
-            # Удаляем временные файлы
-            files_to_clean = []
-            if tmp_path and os.path.exists(tmp_path):
-                files_to_clean.append(tmp_path)
+    def _scan_flatbed(self, scanner_device, result, format_type, dpi, mode):
+        """
+        Обычное сканирование (планшет)
+        """
+        temp_dir = tempfile.gettempdir()
+        effective_format = format_type.lower()
+        file_extension = "pdf" if effective_format == "pdf" else "png"
+        filename = f"scan_{result['scan_id']}.{file_extension}"
+        tmp_path = os.path.join(temp_dir, filename)
 
-            # Добавляем любые другие временные файлы
-            files_to_clean.extend(tmp_files_to_cleanup)
+        scan_args = [
+            "scanimage",
+            f"--device-name={scanner_device}",
+            f"--resolution={dpi}",
+            f"--mode={mode}",
+            f"--format={effective_format}",
+            f"--output-file={tmp_path}"
+        ]
 
-            for file_path in files_to_clean:
-                try:
-                    if os.path.exists(file_path):
-                        os.remove(file_path)
-                        logger.debug(f"🧹 Временный файл удален: {file_path}")
-                except Exception as e:
-                    logger.warning(f"⚠️ Не удалось удалить временный файл {file_path}: {e}")
+        logger.info(f"📸 Выполняем планшетное сканирование...")
+        logger.debug(f"Параметры: {' '.join(scan_args)}")
+
+        # Выполняем сканирование
+        scan_result = subprocess.run(
+            scan_args,
+            capture_output=True,
+            text=True,
+            timeout=120
+        )
+
+        if scan_result.returncode != 0:
+            error_msg = scan_result.stderr.strip()
+            logger.error(f"❌ Ошибка сканирования: {error_msg}")
+            result.update({"status": "error", "error": f"Ошибка сканирования: {error_msg}"})
+            return result
+
+        # Проверяем файл
+        if not os.path.exists(tmp_path) or os.path.getsize(tmp_path) == 0:
+            error_msg = "Сканирование завершилось, но файл не создан или пустой"
+            logger.error(f"❌ {error_msg}")
+            result.update({"status": "error", "error": error_msg})
+            return result
+
+        file_size = os.path.getsize(tmp_path)
+        result["file_size"] = file_size
+        result["filename"] = filename
+
+        logger.info(f"💾 Файл сохранен: {tmp_path} ({file_size} байт)")
+
+        # Читаем и кодируем файл
+        with open(tmp_path, "rb") as f:
+            file_content = f.read()
+            result["content"] = base64.b64encode(file_content).decode('utf-8')
+
+        logger.info(f"✅ Сканирование {result['scan_id']} успешно завершено")
+        logger.info(f"📊 Итоги: {file_size} байт")
+
+        # Очистка временного файла
+        try:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+                logger.debug(f"🧹 Временный файл удален: {tmp_path}")
+        except Exception as e:
+            logger.warning(f"⚠️ Не удалось удалить временный файл {tmp_path}: {e}")
+
+        return result
+
+    def _cleanup_temp_files(self, file_paths):
+        """
+        Очищает временные файлы
+        """
+        for file_path in file_paths:
+            try:
+                if os.path.exists(file_path):
+                    os.remove(file_path)
+                    logger.debug(f"🧹 Временный файл удален: {file_path}")
+            except Exception as e:
+                logger.warning(f"⚠️ Не удалось удалить временный файл {file_path}: {e}")
 
     def _check_scanner_ready(self, scanner_device):
         """
