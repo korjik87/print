@@ -274,7 +274,8 @@ class ScannerManager:
             "filename": None,
             "pages": 1,  # По умолчанию 1 страница
             "scan_type": "flatbed",
-            "format": format_type.lower()
+            "format": format_type.lower(),
+            "file_size": 0
         }
 
         if getattr(config, 'DISABLE_SCAN', False):
@@ -387,9 +388,9 @@ class ScannerManager:
                     })
                     return result
 
-            # Проверяем, что файл создан и не пустой
-            if not os.path.exists(tmp_path) or os.path.getsize(tmp_path) == 0:
-                error_msg = "Сканирование завершилось, но файл не создан или пустой"
+            # Проверяем, что файл создан
+            if not os.path.exists(tmp_path):
+                error_msg = "Сканирование завершилось, но файл не создан"
                 logger.error(f"❌ {error_msg}")
                 result.update({
                     "status": "error",
@@ -398,31 +399,45 @@ class ScannerManager:
                 return result
 
             file_size = os.path.getsize(tmp_path)
+            result["file_size"] = file_size
+
+            # Проверяем, что файл не пустой и имеет минимальный размер
+            min_file_size = 500  # Минимальный размер файла в байтах
+            if file_size <= min_file_size:
+                error_msg = f"Сканирование завершилось, но файл слишком маленький ({file_size} байт) - возможно, автоподатчик пуст"
+                logger.error(f"❌ {error_msg}")
+                result.update({
+                    "status": "error",
+                    "error": error_msg
+                })
+                return result
+
             logger.info(f"💾 Отсканированный файл сохранен: {tmp_path} ({file_size} байт)")
 
             # Подсчет страниц для PDF файлов
-            if effective_format == "pdf" and use_adf:
-                try:
-                    page_count = self._count_pdf_pages(tmp_path)
-                    result["pages"] = page_count
-                    logger.info(f"📄 Обнаружено страниц в PDF: {page_count}")
-                except Exception as e:
-                    logger.warning(f"⚠️ Не удалось подсчитать страницы в PDF: {e}")
-                    # Устанавливаем количество страниц по умолчанию
-                    result["pages"] = 1
+            if effective_format == "pdf":
+                page_count = self._count_pdf_pages(tmp_path, file_size)
+                result["pages"] = page_count
+
+                if use_adf:
+                    if page_count == 0:
+                        logger.warning("⚠️ PDF создан, но не содержит страниц")
+                    else:
+                        logger.info(f"📄 Обнаружено страниц в PDF: {page_count}")
+                else:
+                    logger.info(f"📄 Страниц в PDF: {page_count}")
 
             # Читаем файл и кодируем в base64
             with open(tmp_path, "rb") as f:
                 file_content = f.read()
                 result["content"] = base64.b64encode(file_content).decode('utf-8')
                 result["filename"] = filename
-                result["file_size"] = file_size
 
             logger.info(f"✅ Сканирование {result['scan_id']} успешно завершено")
             if use_adf:
                 logger.info(f"📊 Итоги ADF сканирования: {result['pages']} страниц, {file_size} байт")
             else:
-                logger.info(f"📊 Итоги сканирования: {file_size} байт")
+                logger.info(f"📊 Итоги сканирования: {result['pages']} страниц, {file_size} байт")
 
             return result
 
@@ -462,12 +477,19 @@ class ScannerManager:
                 except Exception as e:
                     logger.warning(f"⚠️ Не удалось удалить временный файл {file_path}: {e}")
 
-    def _count_pdf_pages(self, pdf_path):
+    def _count_pdf_pages(self, pdf_path, file_size):
         """
-        Подсчитывает количество страниц в PDF файле
+        Подсчитывает количество страниц в PDF файле с улучшенной обработкой ошибок
         """
+        # Если файл слишком маленький, вероятно он пустой или битый
+        if file_size < 1000:
+            logger.warning(f"⚠️ Файл PDF слишком маленький ({file_size} байт), вероятно пустой")
+            return 0
+
+        methods_tried = []
+
+        # Метод 1: Используем pdfinfo (poppler-utils)
         try:
-            # Попробуем использовать pdfinfo (часто установлен в системах с poppler-utils)
             result = subprocess.run(
                 ["pdfinfo", pdf_path],
                 capture_output=True,
@@ -479,36 +501,70 @@ class ScannerManager:
                 for line in result.stdout.splitlines():
                     if line.startswith("Pages:"):
                         pages = int(line.split(":")[1].strip())
+                        methods_tried.append(f"pdfinfo: {pages}")
                         return pages
-        except (subprocess.TimeoutExpired, FileNotFoundError, ValueError):
-            # Если pdfinfo не доступен, попробуем использовать Python библиотеки
-            pass
+            else:
+                methods_tried.append("pdfinfo: failed")
+        except (subprocess.TimeoutExpired, FileNotFoundError, ValueError, subprocess.SubprocessError) as e:
+            methods_tried.append(f"pdfinfo: error ({str(e)})")
 
+        # Метод 2: Используем PyPDF2
         try:
-            # Попробуем использовать PyPDF2 если установлен
             import PyPDF2
             with open(pdf_path, 'rb') as f:
                 reader = PyPDF2.PdfReader(f)
-                return len(reader.pages)
+                pages = len(reader.pages)
+                methods_tried.append(f"PyPDF2: {pages}")
+                return pages
         except ImportError:
-            logger.warning("⚠️ PyPDF2 не установлен, не могу подсчитать страницы PDF")
+            methods_tried.append("PyPDF2: not installed")
         except Exception as e:
-            logger.warning(f"⚠️ Ошибка при подсчете страниц PDF с PyPDF2: {e}")
+            methods_tried.append(f"PyPDF2: error ({str(e)})")
 
+        # Метод 3: Используем pypdf (новое название PyPDF2)
         try:
-            # Попробуем использовать pypdf если установлен (альтернатива PyPDF2)
             import pypdf
             with open(pdf_path, 'rb') as f:
                 reader = pypdf.PdfReader(f)
-                return len(reader.pages)
+                pages = len(reader.pages)
+                methods_tried.append(f"pypdf: {pages}")
+                return pages
         except ImportError:
-            logger.warning("⚠️ pypdf не установлен, не могу подсчитать страницы PDF")
+            methods_tried.append("pypdf: not installed")
         except Exception as e:
-            logger.warning(f"⚠️ Ошибка при подсчете страниц PDF с pypdf: {e}")
+            methods_tried.append(f"pypdf: error ({str(e)})")
 
-        # Если ничего не работает, вернем 1 как значение по умолчанию
-        logger.warning("⚠️ Не удалось определить количество страниц в PDF, используется значение по умолчанию: 1")
-        return 1
+        # Метод 4: Простая проверка путем поиска ключевых слов в бинарном файле
+        try:
+            with open(pdf_path, 'rb') as f:
+                content = f.read()
+
+            # Ищем количество вхождений /Type/Page - грубая оценка количества страниц
+            page_count = content.count(b'/Type/Page')
+            if page_count > 0:
+                methods_tried.append(f"binary_scan: {page_count}")
+                return page_count
+
+            # Ищем /Count - может содержать количество страниц
+            count_match = re.search(rb'/Count\s+(\d+)', content)
+            if count_match:
+                count = int(count_match.group(1))
+                methods_tried.append(f"count_scan: {count}")
+                return count
+
+        except Exception as e:
+            methods_tried.append(f"binary_scan: error ({str(e)})")
+
+        # Если все методы не сработали
+        logger.warning(f"⚠️ Все методы подсчета страниц не сработали: {', '.join(methods_tried)}")
+
+        # Эвристика: если файл больше 50KB, вероятно содержит хотя бы 1 страницу
+        if file_size > 50000:
+            logger.info("📄 Файл большого размера, предполагаем 1 страницу")
+            return 1
+        else:
+            logger.warning("⚠️ Не удалось определить количество страниц, считаем 0")
+            return 0
 
 
     def find_keyboard_device(self):
