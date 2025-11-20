@@ -323,6 +323,19 @@ class ScannerManager:
 
             logger.info(f"🎯 Используем сканер: {scanner_device}")
 
+            # ПРЕДВАРИТЕЛЬНАЯ ПРОВЕРКА: Пытаемся разбудить сканер перед началом сканирования
+            if not self._check_scanner_ready(scanner_device):
+                logger.warning("😴 Сканер не отвечает. Пытаемся разбудить...")
+                if not self._wake_up_scanner_advanced(scanner_device):
+                    error_msg = "Не удалось разбудить сканер. Проверьте питание и подключение."
+                    logger.error(f"❌ {error_msg}")
+                    result.update({
+                        "status": "error",
+                        "error": error_msg
+                    })
+                    return result
+                logger.info("✅ Сканер разбужен, продолжаем сканирование...")
+
             # Базовые параметры сканирования
             scan_args = [
                 "scanimage",
@@ -364,29 +377,85 @@ class ScannerManager:
             logger.info(f"📸 Выполняем сканирование...")
             logger.debug(f"Параметры: {' '.join(scan_args)}")
 
-            # Выполняем сканирование
-            scan_result = subprocess.run(
-                scan_args,
-                capture_output=True,
-                text=True,
-                timeout=300  # 5 минут для ADF
-            )
+            # Выполняем сканирование с возможностью пробуждения сканера
+            max_retries = 2
+            retry_count = 0
+            scan_successful = False
 
-            # Проверяем результат сканирования
-            if scan_result.returncode != 0:
-                error_msg = scan_result.stderr.strip()
+            while retry_count <= max_retries and not scan_successful:
+                try:
+                    scan_result = subprocess.run(
+                        scan_args,
+                        capture_output=True,
+                        text=True,
+                        timeout=300  # 5 минут для ADF
+                    )
 
-                # Игнорируем ошибку "Document feeder out of documents" - это нормально для ADF
-                if use_adf and "Document feeder out of documents" in error_msg:
-                    logger.info("📄 Автоподатчик: все документы отсканированы")
-                    # Продолжаем обработку, так это не критическая ошибка
-                else:
+                    # Если сканирование завершилось без ошибок кода возврата
+                    if scan_result.returncode == 0:
+                        scan_successful = True
+                        break
+
+                    # Обрабатываем ошибки
+                    error_msg = scan_result.stderr.strip()
+
+                    # Игнорируем ошибку "Document feeder out of documents" - это нормально для ADF
+                    if use_adf and "Document feeder out of documents" in error_msg:
+                        logger.info("📄 Автоподатчик: все документы отсканированы")
+                        scan_successful = True
+                        break
+
+                    # Если это первая попытка и есть признаки "спящего" сканера, пробуем разбудить
+                    if retry_count == 0 and self._is_scanner_sleep_error(error_msg):
+                        logger.warning("😴 Сканер, возможно, в спящем режиме. Пытаемся разбудить...")
+                        if self._wake_up_scanner_advanced(scanner_device):
+                            retry_count += 1
+                            time.sleep(8)  # Даем больше времени сканеру проснуться
+                            continue
+                        else:
+                            logger.error("❌ Не удалось разбудить сканер")
+
+                    # Другие ошибки - прерываем
                     logger.error(f"❌ Ошибка сканирования: {error_msg}")
                     result.update({
                         "status": "error",
                         "error": f"Ошибка сканирования: {error_msg}"
                     })
                     return result
+
+                except subprocess.TimeoutExpired:
+                    if retry_count == 0:
+                        logger.warning("⏰ Таймаут сканирования. Пытаемся разбудить сканер...")
+                        if self._wake_up_scanner_advanced(scanner_device):
+                            retry_count += 1
+                            time.sleep(8)
+                            continue
+                        else:
+                            error_msg = "Не удалось разбудить сканер после таймаута"
+                            logger.error(f"❌ {error_msg}")
+                            result.update({
+                                "status": "error",
+                                "error": error_msg
+                            })
+                            return result
+                    else:
+                        error_msg = "Таймаут сканирования после попытки пробуждения"
+                        logger.error(f"❌ {error_msg}")
+                        result.update({
+                            "status": "error",
+                            "error": error_msg
+                        })
+                        return result
+
+            # Если после всех попыток сканирование не удалось
+            if not scan_successful:
+                error_msg = "Сканирование не удалось после нескольких попыток"
+                logger.error(f"❌ {error_msg}")
+                result.update({
+                    "status": "error",
+                    "error": error_msg
+                })
+                return result
 
             # Проверяем, что файл создан
             if not os.path.exists(tmp_path):
@@ -441,14 +510,6 @@ class ScannerManager:
 
             return result
 
-        except subprocess.TimeoutExpired:
-            error_msg = "Таймаут сканирования"
-            logger.error(f"❌ {error_msg}")
-            result.update({
-                "status": "error",
-                "error": error_msg
-            })
-            return result
         except Exception as e:
             error_msg = f"Критическая ошибка сканирования: {str(e)}"
             logger.error(f"❌ {error_msg}")
@@ -476,6 +537,133 @@ class ScannerManager:
                         logger.debug(f"🧹 Временный файл удален: {file_path}")
                 except Exception as e:
                     logger.warning(f"⚠️ Не удалось удалить временный файл {file_path}: {e}")
+
+    def _check_scanner_ready(self, scanner_device):
+        """
+        Проверяет, готов ли сканер к работе, отправляя тестовую команду
+        """
+        try:
+            # Простая команда для проверки доступности сканера
+            test_cmd = ["scanimage", f"--device-name={scanner_device}", "--help"]
+            result = subprocess.run(
+                test_cmd,
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            return result.returncode == 0
+        except (subprocess.TimeoutExpired, subprocess.SubprocessError, FileNotFoundError):
+            return False
+
+    def _is_scanner_sleep_error(self, error_msg):
+        """
+        Определяет, является ли ошибка признаком спящего режима сканера
+        """
+        sleep_indicators = [
+            "device busy",
+            "invalid argument",
+            "no device found",
+            "device not ready",
+            "timeout",
+            "no data available",
+            "operation not supported",
+            "io error",
+            "broken pipe",
+            "connection refused",
+            "network is unreachable",
+            "host is down",
+            "no route to host",
+            "connection timed out",
+            "device or resource busy",
+            "permission denied",
+            "scanimage: open of device",
+            "failed: Error during device I/O",
+            "sane_start: Error during device I/O",
+            "failed to start scanner",
+            "scanner not ready",
+            "warmup",
+            "warming up",
+            "offline",
+            "sleep",
+            "standby"
+        ]
+
+        error_lower = error_msg.lower()
+        for indicator in sleep_indicators:
+            if indicator in error_lower:
+                logger.debug(f"🔍 Обнаружен признак спящего режима: '{indicator}' в ошибке: {error_msg}")
+                return True
+        return False
+
+    def _wake_up_scanner_advanced(self, scanner_device):
+        """
+        Пытается "разбудить" сканер, используя расширенные методы
+        Возвращает True если сканер удалось разбудить
+        """
+        logger.info(f"🔔 Пытаемся разбудить сканер: {scanner_device}")
+
+        wake_up_methods = [
+            # Метод 1: Простой запрос информации о сканере
+            {"cmd": ["scanimage", f"--device-name={scanner_device}", "--help"], "desc": "запрос справки"},
+
+            # Метод 2: Запрос доступных опций
+            {"cmd": ["scanimage", f"--device-name={scanner_device}", "-A"], "desc": "запрос опций"},
+
+            # Метод 4: Перезапрос списка сканеров
+            {"cmd": ["scanimage", "-L"], "desc": "обновление списка сканеров"},
+
+            # Метод 5: Для сетевых сканеров - попытка ping (если это сетевой сканер)
+            {"cmd": ["ping", "-c", "2", scanner_device.split(':')[1] if ':' in scanner_device else scanner_device], "desc": "ping сетевого сканера"},
+
+            # Метод 6: Проверка состояния через SANE
+            {"cmd": ["scanimage", "--test"], "desc": "тест SANE"},
+
+            # Метод 7: Для USB сканеров - перечисление USB устройств
+            {"cmd": ["lsusb"], "desc": "проверка USB устройств"}
+        ]
+
+        success_count = 0
+        total_methods = len(wake_up_methods)
+
+        for i, method in enumerate(wake_up_methods, 1):
+            try:
+                logger.debug(f"🔧 Метод пробуждения {i}/{total_methods}: {method['desc']}")
+                result = subprocess.run(
+                    method["cmd"],
+                    capture_output=True,
+                    text=True,
+                    timeout=15
+                )
+
+                if result.returncode == 0:
+                    logger.info(f"✅ Метод пробуждения '{method['desc']}' выполнен успешно")
+                    success_count += 1
+                else:
+                    logger.debug(f"⚠️ Метод пробуждения '{method['desc']}' завершился с кодом {result.returncode}")
+
+            except subprocess.TimeoutExpired:
+                logger.debug(f"⏰ Таймаут метода пробуждения '{method['desc']}'")
+            except Exception as e:
+                logger.debug(f"⚠️ Ошибка метода пробуждения '{method['desc']}': {e}")
+
+        # Очищаем временный файл если он был создан
+        wakeup_file = "/tmp/wakeup_test.png"
+        if os.path.exists(wakeup_file):
+            try:
+                os.remove(wakeup_file)
+            except:
+                pass
+
+        # Считаем сканер разбуженным если хотя бы некоторые методы сработали
+        if success_count >= 2:
+            logger.info(f"✅ Сканер успешно разбужен ({success_count}/{total_methods} методов сработало)")
+            return True
+        elif success_count > 0:
+            logger.warning(f"⚠️ Сканер частично отвечает ({success_count}/{total_methods} методов сработало)")
+            return True
+        else:
+            logger.error(f"❌ Не удалось разбудить сканер (0/{total_methods} методов сработало)")
+            return False
 
     def _count_pdf_pages(self, pdf_path, file_size):
         """
@@ -546,11 +734,26 @@ class ScannerManager:
                 return page_count
 
             # Ищем /Count - может содержать количество страниц
+            import re
             count_match = re.search(rb'/Count\s+(\d+)', content)
             if count_match:
                 count = int(count_match.group(1))
                 methods_tried.append(f"count_scan: {count}")
                 return count
+
+        except Exception as e:
+            methods_tried.append(f"binary_scan: error ({str(e)})")
+
+        # Если все методы не сработали
+        logger.warning(f"⚠️ Все методы подсчета страниц не сработали: {', '.join(methods_tried)}")
+
+        # Эвристика: если файл больше 50KB, вероятно содержит хотя бы 1 страницу
+        if file_size > 50000:
+            logger.info("📄 Файл большого размера, предполагаем 1 страницу")
+            return 1
+        else:
+            logger.warning("⚠️ Не удалось определить количество страниц, считаем 0")
+            return 0
 
         except Exception as e:
             methods_tried.append(f"binary_scan: error ({str(e)})")
