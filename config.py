@@ -67,3 +67,8 @@ SCANNER_ADF_OPTIONS = [
     # "--batch-increment=1" # инкремент страниц
 ]
 USE_AUTOMATIC_DOCUMENT_FEEDER = True  # Включить автоподатчик
+
+
+# Для установки зависимостей подсчета страниц PDF:
+# sudo apt-get install poppler-utils  # для pdfinfo
+# pip install pypdf  # или pip install PyPDF2
