@@ -338,7 +338,7 @@ class ScannerManager:
     def _scan_with_adf_tiff(self, scanner_device, result, dpi, mode):
         """
         Сканирование с ADF через отдельные TIFF файлы с последующей сборкой в PDF
-        Использует профессиональный подход: --batch с TIFF форматом
+        Использует профессиональный подход: --batch с TIFF форматом и img2pdf для объединения
         """
         import glob
 
@@ -371,25 +371,73 @@ class ScannerManager:
             logger.info(f"📸 Выполняем ADF сканирование в отдельные TIFF...")
             logger.debug(f"Параметры: {' '.join(scan_args)}")
 
-            # Выполняем сканирование
-            scan_result = subprocess.run(
-                scan_args,
-                capture_output=True,
-                text=True,
-                timeout=300  # 5 минут для ADF
-            )
+            # Выполняем сканирование с возможностью пробуждения сканера
+            max_retries = 2
+            retry_count = 0
+            scan_successful = False
 
-            # Обработка результата сканирования
-            if scan_result.returncode != 0:
-                error_msg = scan_result.stderr.strip()
+            while retry_count <= max_retries and not scan_successful:
+                try:
+                    scan_result = subprocess.run(
+                        scan_args,
+                        capture_output=True,
+                        text=True,
+                        timeout=300  # 5 минут для ADF
+                    )
 
-                # Игнорируем ошибку "Document feeder out of documents" для ADF
-                if "Document feeder out of documents" in error_msg:
-                    logger.info("📄 Автоподатчик: все документы отсканированы")
-                else:
-                    logger.error(f"❌ Ошибка ADF сканирования: {error_msg}")
+                    # Если сканирование завершилось без ошибок кода возврата
+                    if scan_result.returncode == 0:
+                        scan_successful = True
+                        break
+
+                    # Обрабатываем ошибки
+                    error_msg = scan_result.stderr.strip()
+
+                    # Игнорируем ошибку "Document feeder out of documents" для ADF
+                    if "Document feeder out of documents" in error_msg:
+                        logger.info("📄 Автоподатчик: все документы отсканированы")
+                        scan_successful = True
+                        break
+
+                    # Если это первая попытка и есть признаки "спящего" сканера, пробуем разбудить
+                    if retry_count == 0 and self._is_scanner_sleep_error(error_msg):
+                        logger.warning("😴 Сканер, возможно, в спящем режиме. Пытаемся разбудить...")
+                        if self._wake_up_scanner_advanced(scanner_device):
+                            retry_count += 1
+                            time.sleep(8)  # Даем больше времени сканеру проснуться
+                            continue
+                        else:
+                            logger.error("❌ Не удалось разбудить сканер")
+
+                    # Другие ошибки - прерываем
+                    logger.error(f"❌ Ошибка сканирования: {error_msg}")
                     result.update({"status": "error", "error": f"Ошибка сканирования: {error_msg}"})
                     return result
+
+                except subprocess.TimeoutExpired:
+                    if retry_count == 0:
+                        logger.warning("⏰ Таймаут сканирования. Пытаемся разбудить сканер...")
+                        if self._wake_up_scanner_advanced(scanner_device):
+                            retry_count += 1
+                            time.sleep(8)
+                            continue
+                        else:
+                            error_msg = "Не удалось разбудить сканер после таймаута"
+                            logger.error(f"❌ {error_msg}")
+                            result.update({"status": "error", "error": error_msg})
+                            return result
+                    else:
+                        error_msg = "Таймаут сканирования после попытки пробуждения"
+                        logger.error(f"❌ {error_msg}")
+                        result.update({"status": "error", "error": error_msg})
+                        return result
+
+            # Если после всех попыток сканирование не удалось
+            if not scan_successful:
+                error_msg = "Сканирование не удалось после нескольких попыток"
+                logger.error(f"❌ {error_msg}")
+                result.update({"status": "error", "error": error_msg})
+                return result
 
             # Шаг 2: Находим все созданные TIFF файлы
             tiff_files = sorted(glob.glob(tiff_pattern))
@@ -406,39 +454,62 @@ class ScannerManager:
             result["pages"] = page_count
             logger.info(f"📄 ADF отсканировано страниц: {page_count}")
 
-            # Шаг 3: Объединяем TIFF в PDF с помощью ImageMagick
-            logger.info(f"🔄 Объединяем {page_count} TIFF файлов в PDF...")
+            # Шаг 3: Объединяем TIFF в PDF с помощью img2pdf
+            logger.info(f"🔄 Объединяем {page_count} TIFF файлов в PDF с помощью img2pdf...")
 
             try:
-                # Используем ImageMagick convert для объединения TIFF в PDF
-                convert_args = ["convert"] + tiff_files + [final_pdf_path]
-                convert_result = subprocess.run(
-                    convert_args,
-                    capture_output=True,
-                    text=True,
-                    timeout=120  # 2 минуты на конвертацию
-                )
+                # Импортируем img2pdf
+                import img2pdf
 
-                if convert_result.returncode != 0:
-                    error_msg = f"ImageMagick error: {convert_result.stderr}"
-                    raise Exception(error_msg)
+                # Создаем PDF из TIFF файлов
+                with open(final_pdf_path, "wb") as f:
+                    f.write(img2pdf.convert(tiff_files))
 
-                logger.info(f"✅ PDF создан с помощью ImageMagick: {final_pdf_path}")
+                logger.info(f"✅ PDF создан с помощью img2pdf: {final_pdf_path}")
 
-            except FileNotFoundError:
-                error_msg = "ImageMagick (convert) не установлен. Установите: sudo apt-get install imagemagick"
+            except ImportError:
+                error_msg = "img2pdf не установлен. Установите: pip install img2pdf"
                 logger.error(f"❌ {error_msg}")
                 result.update({"status": "error", "error": error_msg})
                 return result
             except Exception as e:
-                error_msg = f"Ошибка при объединении TIFF в PDF: {str(e)}"
+                error_msg = f"Ошибка при объединении TIFF в PDF с img2pdf: {str(e)}"
                 logger.error(f"❌ {error_msg}")
-                result.update({"status": "error", "error": error_msg})
-                return result
 
-            # Шаг 4: Проверяем и читаем финальный PDF
+                # Fallback: попробуем использовать первую страницу как PNG
+                logger.warning("🔄 Пытаемся использовать fallback - конвертируем первую страницу в PNG...")
+                try:
+                    # Конвертируем первый TIFF в PNG
+                    first_tiff = tiff_files[0]
+                    png_path = os.path.join(temp_dir, f"{scan_prefix}_fallback.png")
+
+                    convert_result = subprocess.run(
+                        ["convert", first_tiff, png_path],
+                        capture_output=True,
+                        text=True,
+                        timeout=30
+                    )
+
+                    if convert_result.returncode == 0 and os.path.exists(png_path):
+                        # Используем PNG как результат
+                        final_pdf_path = png_path
+                        tmp_files_to_cleanup.append(png_path)
+                        result["format"] = "png"
+                        result["pages"] = 1
+                        result["filename"] = f"scan_{result['scan_id']}.png"
+                        logger.warning("⚠️ Используем первую страницу как PNG (fallback)")
+                    else:
+                        raise Exception("Fallback conversion failed")
+
+                except Exception as fallback_error:
+                    error_msg = f"Ошибка при объединении TIFF в PDF и fallback: {str(fallback_error)}"
+                    logger.error(f"❌ {error_msg}")
+                    result.update({"status": "error", "error": error_msg})
+                    return result
+
+            # Шаг 4: Проверяем и читаем финальный файл
             if not os.path.exists(final_pdf_path):
-                error_msg = "Не удалось создать итоговый PDF файл"
+                error_msg = "Не удалось создать итоговый файл"
                 logger.error(f"❌ {error_msg}")
                 result.update({"status": "error", "error": error_msg})
                 return result
@@ -447,7 +518,7 @@ class ScannerManager:
             result["file_size"] = file_size
             result["filename"] = f"scan_{result['scan_id']}.pdf"
 
-            logger.info(f"💾 Финальный PDF: {final_pdf_path} ({file_size} байт)")
+            logger.info(f"💾 Финальный файл: {final_pdf_path} ({file_size} байт)")
 
             # Читаем и кодируем файл
             with open(final_pdf_path, "rb") as f:
@@ -459,11 +530,6 @@ class ScannerManager:
 
             return result
 
-        except subprocess.TimeoutExpired:
-            error_msg = "Таймаут ADF сканирования"
-            logger.error(f"❌ {error_msg}")
-            result.update({"status": "error", "error": error_msg})
-            return result
         except Exception as e:
             error_msg = f"Ошибка при обработке ADF сканирования: {str(e)}"
             logger.error(f"❌ {error_msg}")
@@ -472,7 +538,6 @@ class ScannerManager:
         finally:
             # Очистка временных файлов
             self._cleanup_temp_files(tmp_files_to_cleanup)
-
     def _scan_flatbed(self, scanner_device, result, format_type, dpi, mode):
         """
         Обычное сканирование (планшет)
@@ -617,11 +682,11 @@ class ScannerManager:
         logger.info(f"🔔 Пытаемся разбудить сканер: {scanner_device}")
 
         wake_up_methods = [
-            # Метод 1: Простой запрос информации о сканере
-            {"cmd": ["scanimage", f"--device-name={scanner_device}", "--help"], "desc": "запрос справки"},
-
             # Метод 2: Запрос доступных опций
             {"cmd": ["scanimage", f"--device-name={scanner_device}", "-A"], "desc": "запрос опций"},
+
+            # Метод 1: Простой запрос информации о сканере
+            {"cmd": ["scanimage", f"--device-name={scanner_device}", "--help"], "desc": "запрос справки"},
 
             # Метод 4: Перезапрос списка сканеров
             {"cmd": ["scanimage", "-L"], "desc": "обновление списка сканеров"},
