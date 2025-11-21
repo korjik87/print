@@ -27,9 +27,12 @@ class UploadService:
         self.check_interval = check_interval
         self.running = False
 
-        # Настройки повторных попыток
-        self.max_attempts = 5
-        self.retry_delays = [10, 30, 60, 300, 600]  # задержки в секундах
+        # Увеличиваем лимиты
+        self.max_attempts = 10
+        self.retry_delays = [10, 30, 60, 300, 600, 1200, 1800, 3600, 7200, 14400]
+
+        # Ошибки, которые можно автоматически сбрасывать после исправления
+        self.recoverable_errors = ['413', 'Request Entity Too Large', 'Connection']
 
         # API настройки
         self.base_url = config.LARAVEL_API.rstrip('/')
@@ -51,6 +54,25 @@ class UploadService:
                 status = metadata.get('status', 'pending')
                 upload_attempts = metadata.get('upload_attempts', 0)
                 last_attempt = metadata.get('last_upload_attempt')
+                upload_error = metadata.get('upload_error', '')
+
+                # Автоматический сброс для исправленных ошибок
+                if status == 'error' and upload_attempts >= self.max_attempts:
+                    if any(error in upload_error for error in self.recoverable_errors):
+                        logger.info(f"🔄 Автоматический сброс для {metadata['scan_id']} (ошибка: {upload_error[:50]}...)")
+                        metadata['status'] = 'pending'
+                        metadata['upload_attempts'] = 0
+                        metadata['upload_error'] = None
+
+                        with open(metadata_file, 'w', encoding='utf-8') as f:
+                            json.dump(metadata, f, indent=2, ensure_ascii=False)
+
+                        # Добавляем в обработку
+                        pending_scans.append({
+                            'metadata': metadata,
+                            'metadata_file': metadata_file
+                        })
+                        continue
 
                 if status == 'pending' or (status == 'error' and upload_attempts < self.max_attempts):
                     # Проверяем, не рано ли пытаться снова
