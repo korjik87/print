@@ -159,7 +159,7 @@ class ScannerManager:
                 ["scanimage", "-L"],
                 capture_output=True,
                 text=True,
-                timeout=50
+                timeout=80
             )
 
             scanner_available = False
@@ -200,7 +200,7 @@ class ScannerManager:
                 ["scanimage", "-L"],
                 capture_output=True,
                 text=True,
-                timeout=50
+                timeout=80
             )
 
             scanners = []
