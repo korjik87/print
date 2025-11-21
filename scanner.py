@@ -321,12 +321,11 @@ class ScannerManager:
 
             # РАЗДЕЛЯЕМ ЛОГИКУ ДЛЯ ADF И ОБЫЧНОГО СКАНИРОВАНИЯ
             if use_adf:
-                # ДЛЯ ADF: сканируем в отдельные TIFF файлы, затем объединяем в PDF
-                return self._scan_with_adf_tiff(scanner_device, result, dpi, mode)
+                # ДЛЯ ADF: сканируем в отдельные PNG файлы, затем сохраняем каждый как отдельный PDF
+                return self._scan_with_adf_images(scanner_device, result, dpi, mode)
             else:
                 # Обычное сканирование (планшет) - оставляем как было
                 return self._scan_flatbed(scanner_device, result, format_type, dpi, mode)
-
         except Exception as e:
             error_msg = f"Критическая ошибка сканирования: {str(e)}"
             logger.error(f"❌ {error_msg}")
@@ -335,32 +334,31 @@ class ScannerManager:
         finally:
             self.scan_in_progress = False
 
-    def _scan_with_adf_tiff(self, scanner_device, result, dpi, mode):
+    def _scan_with_adf_images(self, scanner_device, result, dpi, mode):
         """
-        Сканирование с ADF через отдельные TIFF файлы с последующей сборкой в PDF
-        Использует профессиональный подход: --batch с TIFF форматом и img2pdf для объединения
+        Сканирование с ADF через отдельные PNG файлы с сохранением каждого листа в отдельный PDF
         """
         import glob
+        import img2pdf
 
         temp_dir = tempfile.gettempdir()
 
         # Создаем уникальный префикс для временных файлов
         scan_prefix = f"adf_scan_{result['scan_id']}"
-        tiff_pattern = os.path.join(temp_dir, f"{scan_prefix}_p*.tiff")
-        final_pdf_path = os.path.join(temp_dir, f"scan_{result['scan_id']}.pdf")
+        png_pattern = os.path.join(temp_dir, f"{scan_prefix}_p*.png")
 
-        tmp_files_to_cleanup = [final_pdf_path]
+        tmp_files_to_cleanup = []
 
         try:
-            # Шаг 1: Сканируем в отдельные TIFF файлы с использованием --batch
+            # Шаг 1: Сканируем в отдельные PNG файлы с использованием --batch
             scan_args = [
                 "scanimage",
                 f"--device-name={scanner_device}",
                 f"--resolution={dpi}",
                 f"--mode={mode}",
                 "--source=ADF",
-                "--format=tiff",
-                f"--batch={os.path.join(temp_dir, scan_prefix + '_p%04d.tiff')}"  # p0001.tiff, p0002.tiff, etc.
+                "--format=png",
+                f"--batch={os.path.join(temp_dir, scan_prefix + '_p%04d.png')}"
             ]
 
             # Добавляем дополнительные опции ADF из конфига
@@ -368,7 +366,7 @@ class ScannerManager:
                 scan_args.extend(config.SCANNER_ADF_OPTIONS)
                 logger.info(f"🔧 Используем опции автоподатчика: {config.SCANNER_ADF_OPTIONS}")
 
-            logger.info(f"📸 Выполняем ADF сканирование в отдельные TIFF...")
+            logger.info(f"📸 Выполняем ADF сканирование в отдельные PNG...")
             logger.debug(f"Параметры: {' '.join(scan_args)}")
 
             # Выполняем сканирование с возможностью пробуждения сканера
@@ -382,34 +380,29 @@ class ScannerManager:
                         scan_args,
                         capture_output=True,
                         text=True,
-                        timeout=300  # 5 минут для ADF
+                        timeout=300
                     )
 
-                    # Если сканирование завершилось без ошибок кода возврата
                     if scan_result.returncode == 0:
                         scan_successful = True
                         break
 
-                    # Обрабатываем ошибки
                     error_msg = scan_result.stderr.strip()
 
-                    # Игнорируем ошибку "Document feeder out of documents" для ADF
                     if "Document feeder out of documents" in error_msg:
                         logger.info("📄 Автоподатчик: все документы отсканированы")
                         scan_successful = True
                         break
 
-                    # Если это первая попытка и есть признаки "спящего" сканера, пробуем разбудить
                     if retry_count == 0 and self._is_scanner_sleep_error(error_msg):
                         logger.warning("😴 Сканер, возможно, в спящем режиме. Пытаемся разбудить...")
                         if self._wake_up_scanner_advanced(scanner_device):
                             retry_count += 1
-                            time.sleep(8)  # Даем больше времени сканеру проснуться
+                            time.sleep(5)
                             continue
                         else:
                             logger.error("❌ Не удалось разбудить сканер")
 
-                    # Другие ошибки - прерываем
                     logger.error(f"❌ Ошибка сканирования: {error_msg}")
                     result.update({"status": "error", "error": f"Ошибка сканирования: {error_msg}"})
                     return result
@@ -432,101 +425,120 @@ class ScannerManager:
                         result.update({"status": "error", "error": error_msg})
                         return result
 
-            # Если после всех попыток сканирование не удалось
             if not scan_successful:
                 error_msg = "Сканирование не удалось после нескольких попыток"
                 logger.error(f"❌ {error_msg}")
                 result.update({"status": "error", "error": error_msg})
                 return result
 
-            # Шаг 2: Находим все созданные TIFF файлы
-            tiff_files = sorted(glob.glob(tiff_pattern))
-            if not tiff_files:
-                error_msg = "ADF сканирование завершилось, но TIFF файлы не созданы"
+            # Шаг 2: Находим все созданные PNG файлы
+            png_files = sorted(glob.glob(png_pattern))
+            if not png_files:
+                error_msg = "ADF сканирование завершилось, но PNG файлы не созданы"
                 logger.error(f"❌ {error_msg}")
                 result.update({"status": "error", "error": error_msg})
                 return result
 
-            # Добавляем TIFF файлы в список для очистки
-            tmp_files_to_cleanup.extend(tiff_files)
+            # Добавляем PNG файлы в список для очистки
+            tmp_files_to_cleanup.extend(png_files)
 
-            page_count = len(tiff_files)
+            page_count = len(png_files)
             result["pages"] = page_count
             logger.info(f"📄 ADF отсканировано страниц: {page_count}")
 
-            # Шаг 3: Объединяем TIFF в PDF с помощью img2pdf
-            logger.info(f"🔄 Объединяем {page_count} TIFF файлов в PDF с помощью img2pdf...")
+            # Шаг 3: Сохраняем каждый лист как отдельный PDF файл
+            pdf_files_info = []
 
-            try:
-                # Импортируем img2pdf
-                import img2pdf
-
-                # Создаем PDF из TIFF файлов
-                with open(final_pdf_path, "wb") as f:
-                    f.write(img2pdf.convert(tiff_files))
-
-                logger.info(f"✅ PDF создан с помощью img2pdf: {final_pdf_path}")
-
-            except ImportError:
-                error_msg = "img2pdf не установлен. Установите: pip install img2pdf"
-                logger.error(f"❌ {error_msg}")
-                result.update({"status": "error", "error": error_msg})
-                return result
-            except Exception as e:
-                error_msg = f"Ошибка при объединении TIFF в PDF с img2pdf: {str(e)}"
-                logger.error(f"❌ {error_msg}")
-
-                # Fallback: попробуем использовать первую страницу как PNG
-                logger.warning("🔄 Пытаемся использовать fallback - конвертируем первую страницу в PNG...")
+            for i, png_file in enumerate(png_files):
                 try:
-                    # Конвертируем первый TIFF в PNG
-                    first_tiff = tiff_files[0]
-                    png_path = os.path.join(temp_dir, f"{scan_prefix}_fallback.png")
+                    # Создаем отдельный PDF для каждого листа
+                    page_scan_id = f"{result['scan_id']}_page_{i+1:03d}"
+                    page_filename = f"scan_{page_scan_id}.pdf"
+                    page_pdf_path = os.path.join(self.storage.storage_dir, page_filename)
 
-                    convert_result = subprocess.run(
-                        ["convert", first_tiff, png_path],
-                        capture_output=True,
-                        text=True,
-                        timeout=30
-                    )
+                    # Конвертируем PNG в PDF
+                    with open(page_pdf_path, "wb") as f:
+                        f.write(img2pdf.convert(png_file))
 
-                    if convert_result.returncode == 0 and os.path.exists(png_path):
-                        # Используем PNG как результат
-                        final_pdf_path = png_path
-                        tmp_files_to_cleanup.append(png_path)
-                        result["format"] = "png"
-                        result["pages"] = 1
-                        result["filename"] = f"scan_{result['scan_id']}.png"
-                        logger.warning("⚠️ Используем первую страницу как PNG (fallback)")
-                    else:
-                        raise Exception("Fallback conversion failed")
+                    file_size = os.path.getsize(page_pdf_path)
 
-                except Exception as fallback_error:
-                    error_msg = f"Ошибка при объединении TIFF в PDF и fallback: {str(fallback_error)}"
-                    logger.error(f"❌ {error_msg}")
-                    result.update({"status": "error", "error": error_msg})
-                    return result
+                    # Создаем метаданные для каждого PDF файла
+                    page_metadata = {
+                        "scan_id": page_scan_id,
+                        "filename": page_filename,
+                        "original_filename": page_filename,
+                        "file_path": page_pdf_path,
+                        "file_size": file_size,
+                        "format": "pdf",
+                        "dpi": dpi,
+                        "mode": mode,
+                        "page_number": i + 1,
+                        "parent_scan_id": result['scan_id'],
+                        "created_at": datetime.now().isoformat(),
+                        "status": "pending",
+                        "upload_attempts": 0,
+                        "last_upload_attempt": None,
+                        "upload_error": None
+                    }
 
-            # Шаг 4: Проверяем и читаем финальный файл
-            if not os.path.exists(final_pdf_path):
-                error_msg = "Не удалось создать итоговый файл"
+                    # Сохраняем метаданные
+                    metadata_filename = f"scan_{page_scan_id}.json"
+                    metadata_path = os.path.join(self.storage.storage_dir, metadata_filename)
+
+                    with open(metadata_path, "w", encoding='utf-8') as f:
+                        json.dump(page_metadata, f, indent=2, ensure_ascii=False)
+
+                    pdf_files_info.append({
+                        'scan_id': page_scan_id,
+                        'filename': page_filename,
+                        'file_path': page_pdf_path,
+                        'file_size': file_size,
+                        'page_number': i + 1
+                    })
+
+                    logger.info(f"💾 Сохранен лист {i+1} как отдельный PDF: {page_filename} ({file_size} байт)")
+
+                except Exception as e:
+                    logger.error(f"❌ Ошибка сохранения листа {i+1}: {e}")
+                    continue
+
+            if not pdf_files_info:
+                error_msg = "Не удалось создать ни одного PDF файла"
                 logger.error(f"❌ {error_msg}")
                 result.update({"status": "error", "error": error_msg})
                 return result
 
-            file_size = os.path.getsize(final_pdf_path)
-            result["file_size"] = file_size
-            result["filename"] = f"scan_{result['scan_id']}.pdf"
+            # Шаг 4: Подготавливаем результат для основного скана
+            # Основной скан теперь содержит информацию о всех созданных PDF файлах
+            result["individual_pdfs"] = pdf_files_info
+            result["file_size"] = sum(pdf_info['file_size'] for pdf_info in pdf_files_info)
+            result["filename"] = f"scan_{result['scan_id']}_multiple.pdf"  # Флаг что это множественные файлы
 
-            logger.info(f"💾 Финальный файл: {final_pdf_path} ({file_size} байт)")
+            # Сохраняем основную метадату (для информации)
+            main_metadata = {
+                "scan_id": result['scan_id'],
+                "filename": result['filename'],
+                "original_filename": result['filename'],
+                "file_path": None,  # Нет единого файла
+                "file_size": result["file_size"],
+                "format": "multiple_pdf",
+                "dpi": dpi,
+                "mode": mode,
+                "total_pages": page_count,
+                "individual_files": pdf_files_info,
+                "created_at": datetime.now().isoformat(),
+                "status": "processed",  # Основной скан обработан, отдельные файлы будут загружаться
+                "upload_attempts": 0,
+                "last_upload_attempt": None,
+                "upload_error": None
+            }
 
-            # Читаем и кодируем файл
-            with open(final_pdf_path, "rb") as f:
-                file_content = f.read()
-                result["content"] = base64.b64encode(file_content).decode('utf-8')
+            main_metadata_path = os.path.join(self.storage.storage_dir, f"scan_{result['scan_id']}.json")
+            with open(main_metadata_path, "w", encoding='utf-8') as f:
+                json.dump(main_metadata, f, indent=2, ensure_ascii=False)
 
             logger.info(f"✅ ADF сканирование {result['scan_id']} успешно завершено")
-            logger.info(f"📊 Итоги: {result['pages']} страниц, {file_size} байт")
+            logger.info(f"📊 Итоги: создано {len(pdf_files_info)} отдельных PDF файлов")
 
             return result
 
@@ -538,6 +550,7 @@ class ScannerManager:
         finally:
             # Очистка временных файлов
             self._cleanup_temp_files(tmp_files_to_cleanup)
+
     def _scan_flatbed(self, scanner_device, result, format_type, dpi, mode):
         """
         Обычное сканирование (планшет)

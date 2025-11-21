@@ -53,19 +53,29 @@ class AutoScanService:
             else:
                 logger.info("🎯 Запуск сканирования по нажатию кнопки...")
 
-            # Выполняем сканирование с опцией автоподатчика
+            # Выполняем сканирование
             scan_result = scanner_manager.scan_document(use_adf=self.use_adf)
 
             if scan_result['status'] == 'success':
                 logger.info(f"✅ Сканирование завершено! ID: {scan_result['scan_id']}")
 
-                # Сохраняем скан в директорию
-                save_result = scanner_manager.storage.save_scan(scan_result)
+                # Для ADF сканирования с отдельными PDF файлами
+                if self.use_adf and 'individual_pdfs' in scan_result:
+                    individual_files = scan_result['individual_pdfs']
+                    logger.info(f"📄 Создано отдельных PDF файлов: {len(individual_files)}")
 
-                if save_result['status'] == 'success':
-                    logger.info(f"💾 Скан сохранен: {save_result['scan_path']}")
+                    # Каждый файл уже сохранен в scans_storage с собственными метаданными
+                    # Сервис загрузки автоматически подхватит их
+                    for pdf_info in individual_files:
+                        logger.info(f"   📝 {pdf_info['filename']} ({pdf_info['file_size']} байт)")
+
                 else:
-                    logger.error(f"❌ Ошибка сохранения скана: {save_result.get('error')}")
+                    # Обычное сканирование - сохраняем один файл
+                    save_result = scanner_manager.storage.save_scan(scan_result)
+                    if save_result['status'] == 'success':
+                        logger.info(f"💾 Скан сохранен: {save_result['scan_path']}")
+                    else:
+                        logger.error(f"❌ Ошибка сохранения скана: {save_result.get('error')}")
 
             else:
                 logger.error(f"❌ Ошибка сканирования: {scan_result['error']}")
