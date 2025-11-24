@@ -83,7 +83,7 @@ WantedBy=multi-user.target
 EOF
 
     # Создаем сервис для печати (если есть)
-    if [ -f "main.py" ]; then
+    if [ -f "worker.py" ]; then
         cat > /etc/systemd/system/print-service.service << EOF
 [Unit]
 Description=Print Service
@@ -94,7 +94,7 @@ Requires=auto-scan.service
 Type=simple
 User=root
 WorkingDirectory=$PROJECT_DIR
-ExecStart=/usr/bin/python3 $PROJECT_DIR/main.py
+ExecStart=/usr/bin/python3 $PROJECT_DIR/worker.py
 Restart=always
 RestartSec=10
 StandardOutput=journal
@@ -213,7 +213,7 @@ start_services() {
     systemctl enable auto-scan.service
     echo "✅ Автозапуск auto-scan.service включен"
 
-    if [ -f "main.py" ]; then
+    if [ -f "worker.py" ]; then
         systemctl enable print-service.service
         echo "✅ Автозапуск print-service.service включен"
     fi
@@ -227,7 +227,7 @@ start_services() {
     systemctl restart auto-scan.service
     echo "✅ Сервис auto-scan.service перезапущен"
 
-    if [ -f "main.py" ]; then
+    if [ -f "worker.py" ]; then
         systemctl restart print-service.service
         echo "✅ Сервис print-service.service перезапущен"
     fi
@@ -249,7 +249,7 @@ show_status() {
         echo "📊 Статус сервисов:"
         systemctl status auto-scan.service --no-pager -l
 
-        if [ -f "main.py" ]; then
+        if [ -f "worker.py" ]; then
             systemctl status print-service.service --no-pager -l
         fi
 
