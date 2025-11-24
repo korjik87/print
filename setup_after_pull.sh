@@ -59,6 +59,12 @@ setup_systemd_services() {
 
     # Получаем абсолютный путь к проекту
     PROJECT_DIR=$(pwd)
+    PROJECT_NAME=$(basename "$PROJECT_DIR")
+    PARENT_DIR=$(dirname "$PROJECT_DIR")
+
+    echo "📁 Директория проекта: $PROJECT_DIR"
+    echo "📁 Родительская директория: $PARENT_DIR"
+    echo "📁 Имя проекта: $PROJECT_NAME"
 
     # Создаем сервис для автоматического сканирования
     cat > /etc/systemd/system/auto-scan.service << EOF
@@ -93,12 +99,13 @@ Requires=auto-scan.service
 [Service]
 Type=simple
 User=root
-WorkingDirectory=$PROJECT_DIR
-ExecStart=/bin/bash -c "cd $PROJECT_DIR && PYTHONPATH=$PROJECT_DIR /usr/bin/python3 -c \"import worker\""
+WorkingDirectory=$PARENT_DIR
+ExecStart=/usr/bin/python3 -m $PROJECT_NAME.worker
 Restart=always
 RestartSec=10
 StandardOutput=journal
 StandardError=journal
+Environment=PYTHONPATH=$PROJECT_DIR
 
 [Install]
 WantedBy=multi-user.target
@@ -248,7 +255,7 @@ show_status() {
         echo "📊 Статус сервисов:"
         systemctl status auto-scan.service --no-pager -l
 
-        if [ -f "main.py" ]; then
+        if [ -f "worker.py" ]; then
             systemctl status print-service.service --no-pager -l
         fi
 
@@ -261,9 +268,12 @@ show_status() {
         echo "   sudo systemctl status auto-scan.service"
         echo "   sudo journalctl -u auto-scan.service -f"
         echo "   sudo systemctl restart auto-scan.service"
+        echo "   sudo systemctl status print-service.service"
+        echo "   sudo journalctl -u print-service.service -f"
     else
         echo "🔧 Для управления сервисами запустите:"
         echo "   sudo systemctl status auto-scan.service"
+        echo "   sudo systemctl status print-service.service"
     fi
 
     echo ""
