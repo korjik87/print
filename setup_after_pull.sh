@@ -94,12 +94,11 @@ Requires=auto-scan.service
 Type=simple
 User=root
 WorkingDirectory=$PROJECT_DIR
-ExecStart=/usr/bin/python3 -c "import sys; sys.path.insert(0, '.'); import worker"
+ExecStart=/bin/bash -c "cd $PROJECT_DIR && PYTHONPATH=$PROJECT_DIR /usr/bin/python3 -c \"import worker\""
 Restart=always
 RestartSec=10
 StandardOutput=journal
 StandardError=journal
-Environment=PYTHONPATH=$PROJECT_DIR
 
 [Install]
 WantedBy=multi-user.target
@@ -249,7 +248,7 @@ show_status() {
         echo "📊 Статус сервисов:"
         systemctl status auto-scan.service --no-pager -l
 
-        if [ -f "worker.py" ]; then
+        if [ -f "main.py" ]; then
             systemctl status print-service.service --no-pager -l
         fi
 
