@@ -142,10 +142,10 @@ def get_detailed_printer_status(printer_name: str) -> dict:
     try:
         # Команды для сбора информации о принтере
         commands = [
-            ["lpstat", "-l", "-p", printer_name],
-            ["lpq", "-P", printer_name],
-            ["lpoptions", "-l", "-p", printer_name],
-            ["lpstat", "-o"]
+            ["lpstat", "-l", "-p", printer_name],  # Подробный статус
+            ["lpstat", "-p", printer_name],  # Основной статус
+            ["lpoptions", "-l", "-p", printer_name],  # Опции принтера
+            ["lpstat", "-o"]  # Очередь заданий
         ]
 
         results = {}
@@ -188,70 +188,68 @@ def get_detailed_printer_status(printer_name: str) -> dict:
                     "returncode": -1
                 }
 
-        # Проверяем основную команду lpstat -l -p
-        lpstat_key = "lpstat -l -p " + printer_name
+        # Проверяем основную команду lpstat -p (без -l)
+        lpstat_key = "lpstat -p " + printer_name
         if lpstat_key not in results or results[lpstat_key]["returncode"] != 0:
-            # Проверяем базовое существование принтера
-            check_exists = subprocess.run(
-                ["lpstat", "-p", printer_name],
-                capture_output=True,
-                text=True,
-                timeout=5
-            )
-
-            if check_exists.returncode != 0:
-                return default_status
-
-            # Принтер существует, но детальная информация недоступна
-            default_status["online"] = True
-            default_status["raw_status"] = "Принтер существует, но детальный статус недоступен"
-            default_status["errors"] = ["Детальный статус недоступен"]
+            logger.error(f"Принтер {printer_name} не найден в CUPS")
             return default_status
 
-        # Анализируем вывод команд
+        # Анализируем вывод команды lpstat -p (короткий вывод)
         lpstat_output = results[lpstat_key]["stdout"]
-        lpq_output = results.get("lpq -P " + printer_name, {}).get("stdout", "")
+        lpstat_detailed_output = results.get("lpstat -l -p " + printer_name, {}).get("stdout", "")
         lpstat_o_output = results.get("lpstat -o", {}).get("stdout", "")
 
-        # Определяем основной статус
+        # Определяем основной статус из короткого вывода
         status_text = lpstat_output.lower()
+        detailed_text = lpstat_detailed_output.lower()
 
-        # Более точное определение онлайн статуса
-        is_enabled = "enabled" in status_text and "disabled" not in status_text
-        is_idle = "idle" in status_text
-        is_printing = "printing" in status_text or "processing" in status_text
+        # Более точное определение онлайн статуса для русской локали
+        # В русской локали "свободен. Включен" означает принтер включен и готов
+        # "disabled" в русской локали может быть "выключен" или "отключен"
 
-        is_online = is_enabled and (is_idle or is_printing)
-        is_paused = "paused" in status_text
-        can_print = is_online and not is_paused and not is_printing
+        # Определяем включен ли принтер
+        enabled_phrases = ["enabled", "включен"]
+        disabled_phrases = ["disabled", "выключен", "отключен"]
 
-        # Определяем специфические состояния
+        is_enabled = any(phrase in status_text for phrase in enabled_phrases)
+        is_disabled = any(phrase in status_text for phrase in disabled_phrases)
+
+        # Если нашли "выключен", то принтер точно не включен
+        if is_disabled:
+            is_enabled = False
+
+        # Определяем состояние принтера
+        idle_phrases = ["idle", "свободен", "готов", "ожидание"]
+        printing_phrases = ["printing", "печатает", "processing", "обработка"]
+        paused_phrases = ["paused", "остановлен", "приостановлен", "на паузе"]
+
+        is_idle = any(phrase in status_text for phrase in idle_phrases)
+        is_printing = any(phrase in status_text for phrase in printing_phrases)
+        is_paused = any(phrase in status_text for phrase in paused_phrases)
+
+        # Принтер онлайн если он включен и не выключен
+        is_online = is_enabled and not is_disabled
+
+        # Принтер может печатать если он включен и не на паузе
+        can_print = is_enabled and not is_paused and not is_printing
+
+        # Определяем специфические состояния из подробного вывода
         paper_phrases = ["out of paper", "paper out", "media empty", "нет бумаги", "закончилась бумага"]
         door_phrases = ["door open", "cover open", "открыта крышка", "дверь открыта"]
         toner_phrases = ["toner low", "low toner", "toner empty", "тонер низкий", "замените тонер",
                         "toner near end", "чернила на исходе", "мало тонера"]
 
-        paper_out = any(phrase in status_text for phrase in paper_phrases)
-        door_open = any(phrase in status_text for phrase in door_phrases)
-        toner_low = any(phrase in status_text for phrase in toner_phrases)
+        # Используем подробный вывод для этих проверок
+        paper_out = any(phrase in detailed_text for phrase in paper_phrases)
+        door_open = any(phrase in detailed_text for phrase in door_phrases)
+        toner_low = any(phrase in detailed_text for phrase in toner_phrases)
 
         # Проверяем очередь заданий
         jobs_count = 0
         current_job_id = None
 
-        # Сначала пытаемся использовать lpq
-        if lpq_output:
-            lines = lpq_output.splitlines()
-            for line in lines:
-                if "active" in line.lower() or "printing" in line.lower():
-                    jobs_count += 1
-                    # Извлекаем ID задания
-                    match = re.search(r'(\d+)\s+', line)
-                    if match and not current_job_id:
-                        current_job_id = match.group(1)
-
-        # Если lpq не дал результатов, используем lpstat -o
-        if jobs_count == 0 and lpstat_o_output:
+        # Используем lpstat -o для проверки очереди
+        if lpstat_o_output:
             for line in lpstat_o_output.splitlines():
                 if printer_name in line:
                     jobs_count += 1
@@ -263,7 +261,10 @@ def get_detailed_printer_status(printer_name: str) -> dict:
         # Собираем ошибки
         errors = []
         if not is_online:
-            errors.append("Принтер не в сети")
+            if is_disabled:
+                errors.append("Принтер выключен")
+            else:
+                errors.append("Принтер не в сети")
         if is_paused:
             errors.append("Принтер на паузе")
         if paper_out:
@@ -275,22 +276,10 @@ def get_detailed_printer_status(printer_name: str) -> dict:
         if is_printing and jobs_count > 0:
             errors.append(f"Печатает задание {current_job_id}")
 
-        # Формируем сырой статус для отладки
-        raw_status_parts = []
-        if lpstat_output:
-            # Берем первую строку из lpstat
-            first_line = lpstat_output.split('\n')[0].strip()
-            if first_line:
-                raw_status_parts.append(first_line)
-
-        if lpq_output:
-            # Добавляем информацию об очереди
-            for line in lpq_output.split('\n'):
-                if 'Rank' in line or 'active' in line.lower():
-                    raw_status_parts.append(line.strip())
-                    break
-
-        raw_status = " | ".join(raw_status_parts) if raw_status_parts else "Статус: получен"
+        # Формируем сырой статус
+        raw_status = lpstat_output.strip()
+        if not raw_status:
+            raw_status = "Статус: получен"
 
         return {
             "online": is_online,
@@ -305,6 +294,7 @@ def get_detailed_printer_status(printer_name: str) -> dict:
             "errors": errors,
             "debug": {
                 "is_enabled": is_enabled,
+                "is_disabled": is_disabled,
                 "is_idle": is_idle,
                 "is_printing": is_printing,
                 "commands_executed": list(results.keys())
