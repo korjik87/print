@@ -10,42 +10,82 @@ import traceback
 
 from . import config
 from .utils import cleanup_file, get_detailed_printer_status, setup_logger, update_current_job_id
+from .restart_cups import restart_cups_service
 
 logger = setup_logger()
 
-def printer_exists(printer_name: str) -> bool:
-    """Проверяет, существует ли принтер в системе CUPS"""
+def printer_exists(printer_name: str, try_recovery: bool = True, logger=None) -> bool:
+    """
+    Проверяет существование принтера с безопасным восстановлением
+
+    Args:
+        printer_name: имя принтера
+        try_recovery: пытаться ли восстановить принтер
+        logger: логгер для сообщений
+
+    Returns:
+        bool: True если принтер существует
+    """
+    log = logger or print
+
+    # Базовая проверка
     try:
-        # Используем ту же логику команд, что и в основном статусе
-        commands = [
+        result = subprocess.run(
             ["lpstat", "-p", printer_name],
-            ["lpstat", "-l", "-p", printer_name]
-        ]
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
 
-        for cmd in commands:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=10
-            )
+        if result.returncode == 0:
+            # Проверяем, что принтер действительно в списке
+            output = result.stdout.lower()
+            if printer_name.lower() in output and "unknown" not in output:
+                return True
 
-            if result.returncode == 0:
-                # Проверяем, что принтер действительно существует
-                output = result.stdout.lower()
-                if "unknown" not in output and "not found" not in output:
-                    # Дополнительная проверка для первой команды
-                    if cmd[0] == "lpstat" and cmd[1] == "-p":
-                        # Проверяем, что в выводе есть название принтера
-                        if printer_name.lower() in output:
-                            return True
-                    else:
-                        return True
+        # Принтер не найден
+        if not try_recovery:
+            return False
 
-        return False
+        log(f"⚠️ Принтер '{printer_name}' не найден, пытаемся восстановить...")
+
+        # 1. Простая проверка через несколько секунд (может быть временная проблема)
+        time.sleep(2)
+        result = subprocess.run(
+            ["lpstat", "-p", printer_name],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+
+        if result.returncode == 0:
+            log(f"✅ Принтер '{printer_name}' восстановился сам")
+            return True
+
+        # 2. Пробуем безопасный перезапуск служб
+        log("🔄 Пробуем безопасный перезапуск служб...")
+        restart_cups_service(log, force=False)
+
+        # Даем время на восстановление
+        time.sleep(10)
+
+        # 3. Финальная проверка
+        result = subprocess.run(
+            ["lpstat", "-p", printer_name],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+
+        if result.returncode == 0:
+            log(f"✅ Принтер '{printer_name}' восстановлен после перезапуска служб")
+            return True
+        else:
+            log(f"❌ Принтер '{printer_name}' все еще не найден после восстановления")
+            return False
 
     except Exception as e:
-        logger.error(f"Ошибка при проверке существования принтера {printer_name}: {e}")
+        log(f"❌ Ошибка при проверке принтера '{printer_name}': {e}")
         return False
 
 def get_available_printers():
