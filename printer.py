@@ -16,13 +16,34 @@ logger = setup_logger()
 def printer_exists(printer_name: str) -> bool:
     """Проверяет, существует ли принтер в системе CUPS"""
     try:
-        result = subprocess.run(
+        # Используем ту же логику команд, что и в основном статусе
+        commands = [
             ["lpstat", "-p", printer_name],
-            capture_output=True,
-            text=True,
-            timeout=10
-        )
-        return result.returncode == 0
+            ["lpstat", "-l", "-p", printer_name]
+        ]
+
+        for cmd in commands:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+
+            if result.returncode == 0:
+                # Проверяем, что принтер действительно существует
+                output = result.stdout.lower()
+                if "unknown" not in output and "not found" not in output:
+                    # Дополнительная проверка для первой команды
+                    if cmd[0] == "lpstat" and cmd[1] == "-p":
+                        # Проверяем, что в выводе есть название принтера
+                        if printer_name.lower() in output:
+                            return True
+                    else:
+                        return True
+
+        return False
+
     except Exception as e:
         logger.error(f"Ошибка при проверке существования принтера {printer_name}: {e}")
         return False
@@ -174,7 +195,7 @@ def print_cups(printer: str, tmp_path: str, job_id: str, timeout: int = 180):
         })
         return result
 
-def check_printer_ready(printer: str, max_wait: int = 60):
+def check_printer_ready(printer: str, max_wait: int = 60) -> bool:
     """
     Проверяет, готов ли принтер к печати.
     Возвращает True если готов, False если нет.
@@ -187,25 +208,50 @@ def check_printer_ready(printer: str, max_wait: int = 60):
         logger.error(f"❌ Принтер {printer} не существует в системе CUPS")
         return False
 
+    # Проверяем статус несколько раз с интервалами
+    check_count = 0
     while time.time() - start_time < max_wait:
+        check_count += 1
+        logger.info(f"🔍 Проверка #{check_count} принтера {printer}...")
+
         try:
             status = get_detailed_printer_status(printer)
 
-            if not status["online"]:
-                logger.warning("Принтер не в сети")
+            # Логируем детальный статус для отладки
+            logger.info(f"Статус принтера {printer}: online={status['online']}, "
+                       f"can_print={status['can_print']}, errors={status['errors']}, "
+                       f"jobs_in_queue={status['jobs_in_queue']}")
+
+            # Если принтер полностью недоступен
+            if not status["online"] and len(status["errors"]) > 0:
+                error_msg = status["errors"][0]
+
+                # Проверяем, является ли ошибка временной
+                temporary_errors = ["не в сети", "Принтер недоступен", "Таймаут", "детальный статус недоступен"]
+                if any(temp_err in error_msg for temp_err in temporary_errors):
+                    logger.info(f"⏳ Временная ошибка: {error_msg}, ждем...")
+                    time.sleep(5)
+                    continue
+
+                logger.warning(f"❌ Критическая ошибка: {error_msg}")
                 return False
 
+            # Проверяем конкретные проблемы
             if status.get("paused", False):
-                logger.warning("Принтер на паузе")
+                logger.warning("❌ Принтер на паузе")
                 return False
 
             if status["paper_out"]:
-                logger.warning("Нет бумаги")
+                logger.warning("❌ Нет бумаги")
                 return False
 
             if status["door_open"]:
-                logger.warning("Открыта крышка")
+                logger.warning("❌ Открыта крышка")
                 return False
+
+            if status["toner_low"]:
+                logger.warning("⚠️ Мало тонера, но продолжаем...")
+                # Не блокируем печать при низком тонере, только предупреждаем
 
             # Если принтер готов и очередь пуста - можно печатать
             if status["can_print"] and status["jobs_in_queue"] == 0:
@@ -215,17 +261,31 @@ def check_printer_ready(printer: str, max_wait: int = 60):
             # Если есть задания в очереди, ждем их завершения
             if status["jobs_in_queue"] > 0:
                 current_job = status.get("current_job_id")
-                logger.info(f"⏳ Принтер занят заданием {current_job}, ждем...")
-                time.sleep(5)
+                wait_time = min(10, max_wait - (time.time() - start_time))
+                if wait_time > 0:
+                    logger.info(f"⏳ Принтер занят заданием {current_job}, "
+                               f"ждем {wait_time:.0f} секунд...")
+                    time.sleep(min(5, wait_time))
+                    continue
+                else:
+                    logger.warning("⏳ Время ожидания занятого принтера истекло")
+                    return False
+
+            # Если принтер онлайн, но не can_print (например, печатает другое задание)
+            if status["online"] and not status["can_print"]:
+                logger.info("⏳ Принтер онлайн, но занят, ждем...")
+                time.sleep(2)
                 continue
 
-            time.sleep(2)
+            # Неизвестное состояние - ждем
+            logger.info("⏳ Неизвестное состояние принтера, ждем...")
+            time.sleep(3)
 
         except Exception as e:
-            logger.error(f"Ошибка при проверке принтера: {e}")
+            logger.error(f"❌ Ошибка при проверке принтера: {e}")
             time.sleep(5)
 
-    logger.error("❌ Принтер не готов в течение заданного времени")
+    logger.error(f"❌ Принтер {printer} не готов в течение {max_wait} секунд")
     return False
 
 def print_file(task: dict):
