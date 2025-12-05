@@ -99,6 +99,71 @@ class ScanStorage:
                 "error": str(e)
             }
 
+
+class ScannerStatusSender:
+    """Класс для отправки статусов сканера на сервер"""
+
+    def __init__(self):
+        self.last_error_time = 0
+        self.error_cooldown = 300  # 5 минут между повторными отправками ошибок
+        self.last_status_time = 0
+        self.status_cooldown = 60  # 1 минута между отправками обычных статусов
+
+    def send_scanner_status(self, status_type, status, error_type=None, error_message=None, details=None):
+        """
+        Отправляет статус сканера на сервер
+        """
+        try:
+            import requests
+            from . import config
+
+            current_time = time.time()
+
+            # Проверяем кулдаун для ошибок
+            if status == "error" or status == "disconnected":
+                if current_time - self.last_error_time < self.error_cooldown:
+                    logger.debug(f"⏳ Ошибка сканера отправлялась недавно, пропускаем")
+                    return
+                self.last_error_time = current_time
+
+            # Проверяем кулдаун для обычных статусов
+            elif current_time - self.last_status_time < self.status_cooldown:
+                logger.debug(f"⏳ Статус сканера отправлялся недавно, пропускаем")
+                return
+            else:
+                self.last_status_time = current_time
+
+            # Подготавливаем данные
+            data = {
+                "worker_id": config.PRINTER_ID,
+                "printer_id": config.PRINTER,
+                "scanner_status": status,  # "connected", "disconnected", "error"
+                "status_type": status_type,  # "dbus", "scanner", "hardware", "scanning"
+                "error_type": error_type,
+                "error_message": error_message,
+                "details": details or {},
+                "timestamp": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+            }
+
+            # Отправляем на сервер
+            url = f"{config.LARAVEL_API}/v1/scanner-status"
+
+            response = requests.post(
+                url,
+                json=data,
+                headers={"Authorization": f"Bearer {config.LARAVEL_TOKEN}"},
+                timeout=5
+            )
+
+            if response.status_code == 200:
+                logger.info(f"📡 Статус сканера отправлен: {status_type} - {status}")
+            else:
+                logger.error(f"❌ Ошибка отправки статуса сканера: {response.status_code}")
+
+        except Exception as e:
+            logger.error(f"❌ Не удалось отправить статус сканера: {e}")
+
+
 class ScannerManager:
     def __init__(self):
         self.scanning = False
@@ -113,6 +178,9 @@ class ScannerManager:
         # Хранилище сканов
         self.storage = ScanStorage()
 
+        # Отправитель статусов
+        self.status_sender = ScannerStatusSender()
+
         # Кеш для данных сканера
         self._scanner_cache = None
         self._scanner_cache_time = 0
@@ -121,6 +189,151 @@ class ScannerManager:
         # Кеш для доступных сканеров
         self._available_scanners_cache = None
         self._available_scanners_cache_time = 0
+
+        # Мониторинг DBus
+        self._last_dbus_restart = 0
+        self._dbus_restart_cooldown = 300  # 5 минут между перезагрузками
+        self._dbus_slow_threshold = 5.0  # 5 секунд - порог медленной работы
+        self._dbus_timeout_threshold = 10.0  # 10 секунд - порог таймаута
+
+        # Статистика производительности
+        self._performance_stats = {
+            'scanimage_L_times': [],
+            'dbus_ping_times': [],
+            'last_check': None,
+            'slow_operations': 0
+        }
+
+    def _check_dbus_performance(self):
+        """
+        Проверяет производительность DBus и перезагружает при необходимости
+        Возвращает True если DBus работает нормально
+        """
+        try:
+            start_time = time.time()
+
+            # Пинг DBus
+            result = subprocess.run(
+                ["dbus-send", "--system", "--print-reply",
+                 "--dest=org.freedesktop.DBus", "/org/freedesktop/DBus",
+                 "org.freedesktop.DBus.Ping"],
+                capture_output=True,
+                text=True,
+                timeout=self._dbus_timeout_threshold
+            )
+
+            ping_time = (time.time() - start_time) * 1000  # в миллисекундах
+
+            # Сохраняем статистику
+            self._performance_stats['dbus_ping_times'].append(ping_time)
+            if len(self._performance_stats['dbus_ping_times']) > 10:
+                self._performance_stats['dbus_ping_times'].pop(0)
+
+            # Проверяем пороги
+            if result.returncode != 0:
+                logger.warning(f"⚠️ DBus не отвечает (код: {result.returncode})")
+                self.status_sender.send_scanner_status(
+                    status_type="dbus",
+                    status="error",
+                    error_type="dbus_not_responding",
+                    error_message="DBus не отвечает на ping",
+                    details={"returncode": result.returncode, "stderr": result.stderr}
+                )
+                return False
+
+            elif ping_time > self._dbus_slow_threshold * 1000:  # Превышен порог медленной работы
+                logger.warning(f"⚠️ DBus медленный: {ping_time:.1f}ms")
+                self._performance_stats['slow_operations'] += 1
+
+                # Если несколько медленных операций подряд - перезагружаем DBus
+                if self._performance_stats['slow_operations'] >= 3:
+                    logger.warning(f"🚨 {self._performance_stats['slow_operations']} медленных операций DBus подряд")
+                    return self._restart_dbus_if_needed(ping_time)
+
+            else:
+                # DBus работает нормально
+                if self._performance_stats['slow_operations'] > 0:
+                    self._performance_stats['slow_operations'] = 0
+                    logger.info(f"✅ DBus восстановил нормальную скорость: {ping_time:.1f}ms")
+                    self.status_sender.send_scanner_status(
+                        status_type="dbus",
+                        status="connected",
+                        details={"ping_time_ms": ping_time}
+                    )
+
+            return True
+
+        except subprocess.TimeoutExpired:
+            logger.error(f"⏰ DBus не отвечает по таймауту {self._dbus_timeout_threshold}с")
+            self.status_sender.send_scanner_status(
+                status_type="dbus",
+                status="error",
+                error_type="dbus_timeout",
+                error_message=f"DBus не отвечает по таймауту {self._dbus_timeout_threshold}с"
+            )
+            return self._restart_dbus_if_needed(timeout=True)
+
+        except Exception as e:
+            logger.error(f"❌ Ошибка проверки DBus: {e}")
+            return False
+
+    def _restart_dbus_if_needed(self, ping_time_ms=None, timeout=False):
+        """
+        Перезагружает DBus если прошло достаточно времени с последней перезагрузки
+        """
+        current_time = time.time()
+
+        # Проверяем кулдаун
+        if current_time - self._last_dbus_restart < self._dbus_restart_cooldown:
+            logger.warning(f"⏳ DBus перезагружался недавно, пропускаем")
+            return False
+
+        logger.warning(f"🔄 Перезагружаем DBus...")
+
+        try:
+            # Перезагружаем DBus
+            result = subprocess.run(
+                ["systemctl", "restart", "dbus"],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+
+            if result.returncode == 0:
+                self._last_dbus_restart = current_time
+                self._performance_stats['slow_operations'] = 0
+
+                logger.info("✅ DBus успешно перезагружен")
+
+                # Отправляем статус о перезагрузке
+                details = {}
+                if ping_time_ms:
+                    details["ping_time_ms"] = ping_time_ms
+                if timeout:
+                    details["timeout"] = True
+
+                self.status_sender.send_scanner_status(
+                    status_type="dbus",
+                    status="restarted",
+                    details=details
+                )
+
+                # Ждем немного после перезагрузки
+                time.sleep(3)
+                return True
+            else:
+                logger.error(f"❌ Ошибка перезагрузки DBus: {result.stderr}")
+                self.status_sender.send_scanner_status(
+                    status_type="dbus",
+                    status="error",
+                    error_type="dbus_restart_failed",
+                    error_message=f"Не удалось перезагрузить DBus: {result.stderr}"
+                )
+                return False
+
+        except Exception as e:
+            logger.error(f"❌ Исключение при перезагрузке DBus: {e}")
+            return False
 
     def _get_scanner_cache(self):
         """Получает кешированные данные сканера, если они еще актуальны"""
@@ -149,12 +362,18 @@ class ScannerManager:
 
     def scanner_exists(self) -> bool:
         """Проверяет, доступен ли указанный в конфиге сканер (с кешированием)"""
+        # Сначала проверяем DBus
+        if not self._check_dbus_performance():
+            logger.warning("⚠️ DBus не работает нормально, сканер может быть недоступен")
+
         cached_result = self._get_scanner_cache()
         if cached_result is not None:
             logger.debug("✅ Используем кешированные данные сканера")
             return cached_result
 
         try:
+            start_time = time.time()
+
             result = subprocess.run(
                 ["scanimage", "-L"],
                 capture_output=True,
@@ -162,33 +381,96 @@ class ScannerManager:
                 timeout=80
             )
 
+            elapsed = time.time() - start_time
+
+            # Сохраняем статистику производительности
+            self._performance_stats['scanimage_L_times'].append(elapsed)
+            if len(self._performance_stats['scanimage_L_times']) > 10:
+                self._performance_stats['scanimage_L_times'].pop(0)
+
             scanner_available = False
+            scanners_found = []
+
             if result.returncode == 0:
                 if hasattr(config, 'SCANNER_DEVICE') and config.SCANNER_DEVICE:
                     scanner_available = config.SCANNER_DEVICE in result.stdout
                 else:
                     scanner_available = bool(result.stdout.strip())
 
+                # Извлекаем список сканеров для отправки на сервер
+                for line in result.stdout.splitlines():
+                    if line.strip() and 'device' in line.lower():
+                        scanners_found.append(line.strip())
+
+            # Проверяем производительность
+            if elapsed > self._dbus_slow_threshold:
+                logger.warning(f"⚠️ scanimage -L медленный: {elapsed:.2f}с")
+                self._performance_stats['slow_operations'] += 1
+
+                if self._performance_stats['slow_operations'] >= 2:
+                    self._restart_dbus_if_needed(ping_time_ms=elapsed*1000)
+
             # Кешируем результат
             self._set_scanner_cache(scanner_available)
 
             if scanner_available:
-                logger.info("✅ Сканер доступен (данные закешированы)")
+                logger.info(f"✅ Сканер доступен (время проверки: {elapsed:.2f}с)")
+                # Отправляем статус "подключен"
+                self.status_sender.send_scanner_status(
+                    status_type="scanner",
+                    status="connected",
+                    details={
+                        "check_time_sec": elapsed,
+                        "scanners_found": scanners_found,
+                        "config_scanner": getattr(config, 'SCANNER_DEVICE', 'не указан')
+                    }
+                )
             else:
                 logger.warning("❌ Сканер недоступен")
+                # Отправляем статус "отключен"
+                self.status_sender.send_scanner_status(
+                    status_type="scanner",
+                    status="disconnected",
+                    error_type="scanner_not_found",
+                    error_message="Сканер не найден в системе",
+                    details={
+                        "check_time_sec": elapsed,
+                        "scanners_found": scanners_found,
+                        "config_scanner": getattr(config, 'SCANNER_DEVICE', 'не указан'),
+                        "returncode": result.returncode,
+                        "stderr": result.stderr[:200] if result.stderr else None
+                    }
+                )
 
             return scanner_available
 
         except subprocess.TimeoutExpired:
             logger.error("❌ Таймаут при проверке сканера")
             # Не кешируем при ошибке таймаута
+            self.status_sender.send_scanner_status(
+                status_type="scanner",
+                status="error",
+                error_type="scanner_check_timeout",
+                error_message="Таймаут при проверке сканера"
+            )
             return False
+
         except Exception as e:
             logger.error(f"❌ Ошибка при проверке сканера: {e}")
+            self.status_sender.send_scanner_status(
+                status_type="scanner",
+                status="error",
+                error_type="scanner_check_exception",
+                error_message=f"Ошибка при проверке сканера: {str(e)}"
+            )
             return False
 
     def get_available_scanners(self):
         """Получает список доступных сканеров (с кешированием)"""
+        # Сначала проверяем DBus
+        if not self._check_dbus_performance():
+            logger.warning("⚠️ DBus не работает нормально, список сканеров может быть неполным")
+
         # Используем кеш, если он есть и не старше 5 минут
         if (self._available_scanners_cache and
             time.time() - self._available_scanners_cache_time < 300):
@@ -196,12 +478,16 @@ class ScannerManager:
             return self._available_scanners_cache
 
         try:
+            start_time = time.time()
+
             result = subprocess.run(
                 ["scanimage", "-L"],
                 capture_output=True,
                 text=True,
-                timeout=80
+                timeout=60
             )
+
+            elapsed = time.time() - start_time
 
             scanners = []
             if result.returncode == 0:
@@ -209,19 +495,54 @@ class ScannerManager:
                     if line.strip():
                         scanners.append(line.strip())
 
+            # Проверяем производительность
+            if elapsed > self._dbus_slow_threshold:
+                logger.warning(f"⚠️ Получение списка сканеров медленное: {elapsed:.2f}с")
+                self._performance_stats['slow_operations'] += 1
+
+                if self._performance_stats['slow_operations'] >= 2:
+                    self._restart_dbus_if_needed(ping_time_ms=elapsed*1000)
+
             # Кешируем результат
             self._available_scanners_cache = scanners
             self._available_scanners_cache_time = time.time()
 
-            logger.info(f"✅ Получен список сканеров ({len(scanners)} шт.), данные закешированы")
+            logger.info(f"✅ Получен список сканеров ({len(scanners)} шт., время: {elapsed:.2f}с)")
+
+            # Отправляем статус с информацией о сканерах
+            self.status_sender.send_scanner_status(
+                status_type="scanner",
+                status="connected" if scanners else "disconnected",
+                details={
+                    "scanner_count": len(scanners),
+                    "check_time_sec": elapsed,
+                    "scanners": scanners[:5] if scanners else []  # Отправляем первые 5
+                }
+            )
+
             return scanners
 
         except subprocess.TimeoutExpired:
             logger.error("❌ Таймаут при получении списка сканеров")
             # Возвращаем кеш, даже если старый, при таймауте
+            if self._available_scanners_cache:
+                self.status_sender.send_scanner_status(
+                    status_type="scanner",
+                    status="warning",
+                    error_type="scanner_list_timeout",
+                    error_message="Таймаут при получении списка сканеров, используем кеш",
+                    details={"cached_scanners": len(self._available_scanners_cache)}
+                )
             return self._available_scanners_cache or []
+
         except Exception as e:
             logger.error(f"❌ Ошибка при получении списка сканеров: {e}")
+            self.status_sender.send_scanner_status(
+                status_type="scanner",
+                status="error",
+                error_type="scanner_list_exception",
+                error_message=f"Ошибка при получении списка сканеров: {str(e)}"
+            )
             return self._available_scanners_cache or []
 
     def get_scanner_device(self):
@@ -289,7 +610,7 @@ class ScannerManager:
         try:
             logger.info(f"🔍 Начинаем сканирование (ID: {result['scan_id']})")
             if use_adf:
-                logger.info("📄 Используем автоподатчик документов (режим: TIFF → PDF)")
+                logger.info("📄 Используем автоподатчик документов")
                 result["scan_type"] = "adf"
 
             # Проверка доступности сканера
@@ -298,6 +619,20 @@ class ScannerManager:
                 error_msg = f"Сканер не найден. Доступные сканеры: {len(available_scanners)}"
                 logger.error(error_msg)
                 result.update({"status": "error", "error": error_msg})
+
+                # Отправляем ошибку сканера
+                self.status_sender.send_scanner_status(
+                    status_type="scanning",
+                    status="error",
+                    error_type="scanner_not_available",
+                    error_message=error_msg,
+                    details={
+                        "scan_id": result["scan_id"],
+                        "available_scanners": available_scanners,
+                        "scan_type": "adf" if use_adf else "flatbed"
+                    }
+                )
+
                 return result
 
             scanner_device = self.get_scanner_device()
@@ -305,9 +640,32 @@ class ScannerManager:
                 error_msg = "Не удалось определить устройство сканера"
                 logger.error(error_msg)
                 result.update({"status": "error", "error": error_msg})
+
+                # Отправляем ошибку устройства
+                self.status_sender.send_scanner_status(
+                    status_type="scanning",
+                    status="error",
+                    error_type="scanner_device_not_found",
+                    error_message=error_msg,
+                    details={"scan_id": result["scan_id"]}
+                )
+
                 return result
 
             logger.info(f"🎯 Используем сканер: {scanner_device}")
+
+            # Отправляем статус "начало сканирования"
+            self.status_sender.send_scanner_status(
+                status_type="scanning",
+                status="started",
+                details={
+                    "scan_id": result["scan_id"],
+                    "scanner_device": scanner_device,
+                    "dpi": dpi,
+                    "mode": mode,
+                    "use_adf": use_adf
+                }
+            )
 
             # ПРЕДВАРИТЕЛЬНАЯ ПРОВЕРКА И ПРОБУЖДЕНИЕ СКАНЕРА
             if not self._check_scanner_ready(scanner_device):
@@ -316,20 +674,46 @@ class ScannerManager:
                     error_msg = "Не удалось разбудить сканер. Проверьте питание и подключение."
                     logger.error(f"❌ {error_msg}")
                     result.update({"status": "error", "error": error_msg})
+
+                    # Отправляем ошибку "сканер спит"
+                    self.status_sender.send_scanner_status(
+                        status_type="hardware",
+                        status="error",
+                        error_type="scanner_sleep_error",
+                        error_message=error_msg,
+                        details={
+                            "scan_id": result["scan_id"],
+                            "scanner_device": scanner_device
+                        }
+                    )
+
                     return result
                 logger.info("✅ Сканер разбужен, продолжаем сканирование...")
 
             # РАЗДЕЛЯЕМ ЛОГИКУ ДЛЯ ADF И ОБЫЧНОГО СКАНИРОВАНИЯ
             if use_adf:
-                # ДЛЯ ADF: сканируем в отдельные PNG файлы, затем сохраняем каждый как отдельный PDF
                 return self._scan_with_adf_images(scanner_device, result, dpi, mode)
             else:
-                # Обычное сканирование (планшет) - оставляем как было
                 return self._scan_flatbed(scanner_device, result, format_type, dpi, mode)
+
         except Exception as e:
             error_msg = f"Критическая ошибка сканирования: {str(e)}"
             logger.error(f"❌ {error_msg}")
             result.update({"status": "error", "error": error_msg})
+
+            # Отправляем ошибку сканирования
+            self.status_sender.send_scanner_status(
+                status_type="scanning",
+                status="error",
+                error_type="scanning_exception",
+                error_message=error_msg,
+                details={
+                    "scan_id": result["scan_id"],
+                    "exception": str(e),
+                    "traceback": traceback.format_exc()[:500]
+                }
+            )
+
             return result
         finally:
             self.scan_in_progress = False
@@ -376,6 +760,9 @@ class ScannerManager:
 
             while retry_count <= max_retries and not scan_successful:
                 try:
+                    # ЗАМЕР ВРЕМЕНИ СКАНИРОВАНИЯ
+                    scan_start_time = time.time()
+
                     scan_result = subprocess.run(
                         scan_args,
                         capture_output=True,
@@ -383,12 +770,20 @@ class ScannerManager:
                         timeout=300
                     )
 
+                    scan_elapsed = time.time() - scan_start_time
+
+                    # Проверяем производительность DBus после долгого сканирования
+                    if scan_elapsed > 30:  # Если сканирование длилось больше 30 секунд
+                        logger.info(f"⏱️ Сканирование заняло {scan_elapsed:.1f}с, проверяем DBus...")
+                        self._check_dbus_performance()
+
                     if scan_result.returncode == 0:
                         scan_successful = True
                         break
 
                     error_msg = scan_result.stderr.strip()
 
+                    # Обработка ошибок ADF
                     if "Document feeder out of documents" in error_msg:
                         logger.info("📄 Автоподатчик: все документы отсканированы")
                         scan_successful = True
@@ -404,6 +799,21 @@ class ScannerManager:
                             logger.error("❌ Не удалось разбудить сканер")
 
                     logger.error(f"❌ Ошибка сканирования: {error_msg}")
+
+                    # Отправляем ошибку сканирования ADF
+                    self.status_sender.send_scanner_status(
+                        status_type="scanning",
+                        status="error",
+                        error_type="adf_scan_error",
+                        error_message=f"Ошибка ADF сканирования: {error_msg[:100]}",
+                        details={
+                            "scan_id": result["scan_id"],
+                            "scanner_device": scanner_device,
+                            "returncode": scan_result.returncode,
+                            "full_error": error_msg[:500]
+                        }
+                    )
+
                     result.update({"status": "error", "error": f"Ошибка сканирования: {error_msg}"})
                     return result
 
@@ -417,6 +827,20 @@ class ScannerManager:
                         else:
                             error_msg = "Не удалось разбудить сканер после таймаута"
                             logger.error(f"❌ {error_msg}")
+
+                            # Отправляем ошибку таймаута
+                            self.status_sender.send_scanner_status(
+                                status_type="scanning",
+                                status="error",
+                                error_type="adf_scan_timeout",
+                                error_message=error_msg,
+                                details={
+                                    "scan_id": result["scan_id"],
+                                    "scanner_device": scanner_device,
+                                    "timeout_seconds": 300
+                                }
+                            )
+
                             result.update({"status": "error", "error": error_msg})
                             return result
                     else:
@@ -509,17 +933,16 @@ class ScannerManager:
                 return result
 
             # Шаг 4: Подготавливаем результат для основного скана
-            # Основной скан теперь содержит информацию о всех созданных PDF файлах
             result["individual_pdfs"] = pdf_files_info
             result["file_size"] = sum(pdf_info['file_size'] for pdf_info in pdf_files_info)
-            result["filename"] = f"scan_{result['scan_id']}_multiple.pdf"  # Флаг что это множественные файлы
+            result["filename"] = f"scan_{result['scan_id']}_multiple.pdf"
 
-            # Сохраняем основную метадату (для информации)
+            # Сохраняем основную метадату
             main_metadata = {
                 "scan_id": result['scan_id'],
                 "filename": result['filename'],
                 "original_filename": result['filename'],
-                "file_path": None,  # Нет единого файла
+                "file_path": None,
                 "file_size": result["file_size"],
                 "format": "multiple_pdf",
                 "dpi": dpi,
@@ -527,7 +950,7 @@ class ScannerManager:
                 "total_pages": page_count,
                 "individual_files": pdf_files_info,
                 "created_at": datetime.now().isoformat(),
-                "status": "processed",  # Основной скан обработан, отдельные файлы будут загружаться
+                "status": "processed",
                 "upload_attempts": 0,
                 "last_upload_attempt": None,
                 "upload_error": None
@@ -539,6 +962,18 @@ class ScannerManager:
 
             logger.info(f"✅ ADF сканирование {result['scan_id']} успешно завершено")
             logger.info(f"📊 Итоги: создано {len(pdf_files_info)} отдельных PDF файлов")
+
+            # Отправляем статус успешного сканирования
+            self.status_sender.send_scanner_status(
+                status_type="scanning",
+                status="completed",
+                details={
+                    "scan_id": result["scan_id"],
+                    "pages": page_count,
+                    "total_size": result["file_size"],
+                    "individual_files": len(pdf_files_info)
+                }
+            )
 
             return result
 
@@ -573,50 +1008,108 @@ class ScannerManager:
         logger.info(f"📸 Выполняем планшетное сканирование...")
         logger.debug(f"Параметры: {' '.join(scan_args)}")
 
-        # Выполняем сканирование
-        scan_result = subprocess.run(
-            scan_args,
-            capture_output=True,
-            text=True,
-            timeout=120
-        )
+        try:
+            # ЗАМЕР ВРЕМЕНИ СКАНИРОВАНИЯ
+            scan_start_time = time.time()
 
-        if scan_result.returncode != 0:
-            error_msg = scan_result.stderr.strip()
-            logger.error(f"❌ Ошибка сканирования: {error_msg}")
-            result.update({"status": "error", "error": f"Ошибка сканирования: {error_msg}"})
+            scan_result = subprocess.run(
+                scan_args,
+                capture_output=True,
+                text=True,
+                timeout=120
+            )
+
+            scan_elapsed = time.time() - scan_start_time
+
+            # Проверяем производительность после сканирования
+            if scan_elapsed > 20:  # Если сканирование длилось больше 20 секунд
+                logger.info(f"⏱️ Сканирование заняло {scan_elapsed:.1f}с, проверяем DBus...")
+                self._check_dbus_performance()
+
+            if scan_result.returncode != 0:
+                error_msg = scan_result.stderr.strip()
+                logger.error(f"❌ Ошибка сканирования: {error_msg}")
+
+                # Отправляем ошибку сканирования
+                self.status_sender.send_scanner_status(
+                    status_type="scanning",
+                    status="error",
+                    error_type="flatbed_scan_error",
+                    error_message=f"Ошибка планшетного сканирования: {error_msg[:100]}",
+                    details={
+                        "scan_id": result["scan_id"],
+                        "scanner_device": scanner_device,
+                        "returncode": scan_result.returncode,
+                        "scan_time_sec": scan_elapsed
+                    }
+                )
+
+                result.update({"status": "error", "error": f"Ошибка сканирования: {error_msg}"})
+                return result
+
+            # Проверяем файл
+            if not os.path.exists(tmp_path) or os.path.getsize(tmp_path) == 0:
+                error_msg = "Сканирование завершилось, но файл не создан или пустой"
+                logger.error(f"❌ {error_msg}")
+                result.update({"status": "error", "error": error_msg})
+                return result
+
+            file_size = os.path.getsize(tmp_path)
+            result["file_size"] = file_size
+            result["filename"] = filename
+
+            logger.info(f"💾 Файл сохранен: {tmp_path} ({file_size} байт)")
+
+            # Читаем и кодируем файл
+            with open(tmp_path, "rb") as f:
+                file_content = f.read()
+                result["content"] = base64.b64encode(file_content).decode('utf-8')
+
+            logger.info(f"✅ Сканирование {result['scan_id']} успешно завершено")
+            logger.info(f"📊 Итоги: {file_size} байт, время: {scan_elapsed:.1f}с")
+
+            # Отправляем статус успешного сканирования
+            self.status_sender.send_scanner_status(
+                status_type="scanning",
+                status="completed",
+                details={
+                    "scan_id": result["scan_id"],
+                    "file_size": file_size,
+                    "scan_time_sec": scan_elapsed,
+                    "format": effective_format
+                }
+            )
+
             return result
 
-        # Проверяем файл
-        if not os.path.exists(tmp_path) or os.path.getsize(tmp_path) == 0:
-            error_msg = "Сканирование завершилось, но файл не создан или пустой"
+        except subprocess.TimeoutExpired:
+            error_msg = "Таймаут при сканировании (60с)"
             logger.error(f"❌ {error_msg}")
+
+            # Отправляем ошибку таймаута
+            self.status_sender.send_scanner_status(
+                status_type="scanning",
+                status="error",
+                error_type="flatbed_scan_timeout",
+                error_message=error_msg,
+                details={
+                    "scan_id": result["scan_id"],
+                    "scanner_device": scanner_device,
+                    "timeout_seconds": 60
+                }
+            )
+
             result.update({"status": "error", "error": error_msg})
             return result
 
-        file_size = os.path.getsize(tmp_path)
-        result["file_size"] = file_size
-        result["filename"] = filename
-
-        logger.info(f"💾 Файл сохранен: {tmp_path} ({file_size} байт)")
-
-        # Читаем и кодируем файл
-        with open(tmp_path, "rb") as f:
-            file_content = f.read()
-            result["content"] = base64.b64encode(file_content).decode('utf-8')
-
-        logger.info(f"✅ Сканирование {result['scan_id']} успешно завершено")
-        logger.info(f"📊 Итоги: {file_size} байт")
-
-        # Очистка временного файла
-        try:
-            if os.path.exists(tmp_path):
-                os.remove(tmp_path)
-                logger.debug(f"🧹 Временный файл удален: {tmp_path}")
-        except Exception as e:
-            logger.warning(f"⚠️ Не удалось удалить временный файл {tmp_path}: {e}")
-
-        return result
+        finally:
+            # Очистка временного файла
+            try:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+                    logger.debug(f"🧹 Временный файл удален: {tmp_path}")
+            except Exception as e:
+                logger.warning(f"⚠️ Не удалось удалить временный файл {tmp_path}: {e}")
 
     def _cleanup_temp_files(self, file_paths):
         """
@@ -749,13 +1242,58 @@ class ScannerManager:
         # Считаем сканер разбуженным если хотя бы некоторые методы сработали
         if success_count >= 2:
             logger.info(f"✅ Сканер успешно разбужен ({success_count}/{total_methods} методов сработало)")
-            return True
-        elif success_count > 0:
-            logger.warning(f"⚠️ Сканер частично отвечает ({success_count}/{total_methods} методов сработало)")
+
+            # Отправляем статус "сканер разбужен"
+            self.status_sender.send_scanner_status(
+                status_type="hardware",
+                status="woke_up",
+                details={
+                    "scanner_device": scanner_device,
+                    "success_methods": success_count,
+                    "total_methods": total_methods
+                }
+            )
+
             return True
         else:
             logger.error(f"❌ Не удалось разбудить сканер (0/{total_methods} методов сработало)")
+
+            # Отправляем ошибку "не удалось разбудить"
+            self.status_sender.send_scanner_status(
+                status_type="hardware",
+                status="error",
+                error_type="wake_up_failed",
+                error_message="Не удалось разбудить сканер",
+                details={
+                    "scanner_device": scanner_device,
+                    "success_methods": success_count,
+                    "total_methods": total_methods
+                }
+            )
+
             return False
+
+    def start_periodic_monitoring(self):
+        """Запускает периодический мониторинг состояния сканера"""
+        def monitor_loop():
+            while True:
+                try:
+                    # Проверяем DBus каждые 2 минуты
+                    self._check_dbus_performance()
+
+                    # Проверяем сканер каждые 5 минут
+                    if time.time() - self._scanner_cache_time > 300:
+                        self.scanner_exists()
+
+                    time.sleep(120)  # 2 минуты
+
+                except Exception as e:
+                    logger.error(f"❌ Ошибка в мониторинге сканера: {e}")
+                    time.sleep(60)
+
+        monitor_thread = threading.Thread(target=monitor_loop, daemon=True)
+        monitor_thread.start()
+        logger.info("📊 Запущен периодический мониторинг сканера")
 
     def _count_pdf_pages(self, pdf_path, file_size):
         """
